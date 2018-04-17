@@ -5,6 +5,7 @@ import time
 
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
+import psutil
 
 llvm.initialize()
 llvm.initialize_native_target()
@@ -50,7 +51,11 @@ with irbuilder.goto_block(bb_loop):
     # IRBuilder.asm(ftype, asm, constraint, args, side_effect, name='')
     asm_ftype = ll.FunctionType(counter_type, [counter_type])
     asm = irbuilder.asm(asm_ftype,
-                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0", "=r,r,i,i,i",
+                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
+                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
+                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
+                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0",
+                        "=r,r,i,i,i",
                         (loop_counter, counter_type(23), counter_type(13), counter_type(10)),
                         side_effect=True, name="asm")
     loop_counter_final = asm
@@ -88,12 +93,14 @@ with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
 
     # Now 'cfunc' is an actual callable we can invoke
     # TODO replace time.clock with a C implemententation for less overhead
-    N = 1000000000
-    start = time.clock()
-    res = cfunc(N)
-    end = time.clock()
-    benchtime = end-start
-    print('The result ({}) in {}s'.format(res, benchtime))
+    N = 100000000
+    for i in range(100):
+        start = time.clock()
+        res = cfunc(N)
+        end = time.clock()
+        benchtime = end-start
+        cur_freq = psutil.cpu_freq().current*1e3
+        print('The result ({}) in {} cy / it'.format(res, benchtime/N*cur_freq))
     
     
     
