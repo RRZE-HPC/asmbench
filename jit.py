@@ -25,48 +25,54 @@ tm.set_asm_verbosity(100)
 #   }
 #   return i;  // replace by checksum like value
 # }
-module = ll.Module()
 
+# Module configuration
 counter_type = ll.IntType(32)
+checksum_type = ll.IntType(32)  # ll.DoubleType()
+checksum_init = checksum_type(0)
+
+# Module
+module = ll.Module()
 func_ty = ll.FunctionType(counter_type, [counter_type])
 func = ll.Function(module, func_ty, name='test')
-
 func.args[0].name = 'N'
 
+# Code
 bb_entry = func.append_basic_block('entry')
 irbuilder = ll.IRBuilder(bb_entry)
 bb_loop = irbuilder.append_basic_block('loop')
 bb_end = irbuilder.append_basic_block('end')
-init_counter = ll.Constant(counter_type, 0)
-loop_cond = irbuilder.icmp_signed('<', init_counter, func.args[0], name="loop_cond")
+counter_init = counter_type(0)
+loop_cond = irbuilder.icmp_signed('<', counter_init, func.args[0], name="loop_cond")
 irbuilder.cbranch(loop_cond, bb_loop, bb_end)
 
 with irbuilder.goto_block(bb_loop):
+    # Loop mechanics & Checksum (1)
     loop_counter_phi = irbuilder.phi(counter_type, name="loop_counter")
-    loop_counter_phi.add_incoming(init_counter, bb_entry)
-    
+    checksum_phi = irbuilder.phi(checksum_type, name="checksum")
+    loop_counter_phi.add_incoming(counter_init, bb_entry)
     loop_counter = irbuilder.add(loop_counter_phi, ll.Constant(counter_type, 1), name="loop_counter")
+    loop_counter_phi.add_incoming(loop_counter, bb_loop)
+    checksum_phi.add_incoming(checksum_init, bb_entry)
     
     # Insert assembly here:
     # IRBuilder.asm(ftype, asm, constraint, args, side_effect, name='')
     asm_ftype = ll.FunctionType(counter_type, [counter_type])
-    asm = irbuilder.asm(asm_ftype,
-                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
-                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
-                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0\n"
-                        "addl $2, $0\nsubl $3, $0\nsubl $4, $0",
-                        "=r,r,i,i,i",
-                        (loop_counter, counter_type(23), counter_type(13), counter_type(10)),
-                        side_effect=True, name="asm")
-    loop_counter_final = asm
-    loop_counter_phi.add_incoming(loop_counter_final, bb_loop)
+    checksum = irbuilder.asm(
+        asm_ftype,
+        "addl $2, $0\n",
+        "=r,r,i",
+        (checksum_phi, checksum_type(1)),
+        side_effect=True, name="asm")
     
-    loop_cond = irbuilder.icmp_signed('<', loop_counter_final, func.args[0], name="loop_cond")
+    # Loop mechanics & Checksum (2)
+    checksum_phi.add_incoming(checksum, bb_loop)
+    loop_cond = irbuilder.icmp_signed('<', loop_counter, func.args[0], name="loop_cond")
     irbuilder.cbranch(loop_cond, bb_loop, bb_end)
 with irbuilder.goto_block(bb_end):
     ret_phi = irbuilder.phi(counter_type, name="ret")
-    ret_phi.add_incoming(init_counter, bb_entry)
-    ret_phi.add_incoming(loop_counter_final, bb_loop)
+    ret_phi.add_incoming(checksum_init, bb_entry)
+    ret_phi.add_incoming(checksum, bb_loop)
     irbuilder.ret(ret_phi)
 
 print('=== LLVM IR')
@@ -95,12 +101,12 @@ with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
     # TODO replace time.clock with a C implemententation for less overhead
     N = 100000000
     for i in range(100):
-        start = time.clock()
+        start = time.perf_counter()
         res = cfunc(N)
-        end = time.clock()
+        end = time.perf_counter()
         benchtime = end-start
         cur_freq = psutil.cpu_freq().current*1e3
-        print('The result ({}) in {} cy / it'.format(res, benchtime/N*cur_freq))
+        print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(res, benchtime/N*cur_freq, benchtime))
     
     
     
