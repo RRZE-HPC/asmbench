@@ -105,7 +105,7 @@ with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
         res = cfunc(N)
         end = time.perf_counter()
         benchtime = end-start
-        cur_freq = psutil.cpu_freq().current*1e3
+        cur_freq = psutil.cpu_freq().current*1e6
         print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(res, benchtime/N*cur_freq, benchtime))
     
     
