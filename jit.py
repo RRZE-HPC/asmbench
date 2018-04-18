@@ -7,6 +7,14 @@ import llvmlite.ir as ll
 import llvmlite.binding as llvm
 import psutil
 
+# TODOs
+# * API to create test scenarios
+# * IACA marked binary output generation
+# * Fuzzing algorithm
+# * CLI
+# * C based timing routine? As an extension?
+# * make sanity checks during runtime, check for fixed frequency and pinning
+
 def construct_test():
     # Create a new module with a function implementing this:
     #
@@ -102,6 +110,30 @@ if __name__ == '__main__':
       %"extra_regs_1.1" = extractvalue { i32, i32, i32, i32 } %"asm", 1
       %"extra_regs_2.1" = extractvalue { i32, i32, i32, i32 } %"asm", 2
       %"extra_regs_3.1" = extractvalue { i32, i32, i32, i32 } %"asm", 3
+      %"loop_cond.1" = icmp slt i32 %"loop_counter.1", %"N"
+      br i1 %"loop_cond.1", label %"loop", label %"end"
+    end:
+      %"ret" = phi i32 [0, %"entry"], [%"checksum.1", %"loop"]
+      ret i32 %"ret"
+    }
+    '''
+    
+    module = '''
+    define i32 @"test"(i32 %"N")
+    {
+    entry:
+      %"loop_cond" = icmp slt i32 0, %"N"
+      br i1 %"loop_cond", label %"loop", label %"end"
+    loop:
+      %"loop_counter" = phi i32 [0, %"entry"], [%"loop_counter.1", %"loop"]
+      %"checksum" = phi i32 [0, %"entry"], [%"checksum.1", %"loop"]
+      %"loop_counter.1" = add i32 %"loop_counter", 1
+      %"checksum.1" = call i32 asm sideeffect "
+          addl $1, $0
+          addl $1, $0
+          addl $1, $0
+          addl $1, $0",
+          "=r,i,r" (i32 1, i32 %"checksum")
       %"loop_cond.1" = icmp slt i32 %"loop_counter.1", %"N"
       br i1 %"loop_cond.1", label %"loop", label %"end"
     end:
