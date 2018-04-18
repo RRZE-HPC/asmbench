@@ -3,7 +3,7 @@ import ctypes
 import sys
 import time
 import textwrap
-import functools
+import itertools
 
 import llvmlite.binding as llvm
 import psutil
@@ -137,8 +137,10 @@ class InstructionTest:
 
 
 class LatencytTest(InstructionTest):
-    def __init__(self, instruction='addq $1, $0', dst_operands=[], dstsrc_operands=[('r','i64', '0')],
-                 src_operands=[('i','i64', '1')]):
+    def __init__(self, instruction='addq $1, $0',
+                 dst_operands=(),
+                 dstsrc_operands=(('r','i64', '0'),),
+                 src_operands=(('i','i64', '1'),)):
         '''
         instruction's operands ($N) refer to the order of opernads found in dst + dstsrc + src.
         '''
@@ -148,13 +150,16 @@ class LatencytTest(InstructionTest):
             raise ValueError("There must be exactly one dst or dstsrc oprand. Future versions "
                             "might support multiple or no outputs.")
 
+        self.ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
+        
         # Part 1: PHI functions
-        for i, dstsrc_op in enumerate(functools.chain(dstsrc_operands)):
+        for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
             # constraint code, llvm type string, initial value
             if dstsrc_op[0] == 'r':
                 # register operand
-                self.loop_body += \
-                    '%"dstsrc{index}" = phi {type} [{initial}, %"entry"], [%"dst{index}.out", %"loop"]'.format(
+                self.loop_body += (
+                    '%"dstsrc{index}" = '
+                    'phi {type} [{initial}, %"entry"], [%"dstsrc{index}.out", %"loop"]\n').format(
                         index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
             # TODO add support for memory operands
             #elif dst_op[0] == 'm':
@@ -162,35 +167,40 @@ class LatencytTest(InstructionTest):
             else:
                 raise ValueError("Operand type in {!r} is not supported here.".format(dstsrc_op))
         
-        for i, dst_op in enumerate(functools.chain(dst_operands)):
+        for i, dst_op in enumerate(itertools.chain(dst_operands)):
             # No phi functions necessary
             pass
         
-        for i, src_op in enumerate(functools.chain(src_operands)):
+        for i, src_op in enumerate(itertools.chain(src_operands)):
             # No phi functions necessary
             pass
         
         # Part 2: Inline ASM call
-        for i, dstsrc_op in enumerate(functools.chain(dstsrc_operands)):
+        for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
             # Build instruction from instruction and operands
             # TODO either document order of operands in instruction string or replace by DSL
             # Build constraint string from operands
             constraints = ','.join(
-                ['='+dop[0] for dop in functools.chain(dst_operands, dstsrc_operands)] +
-                [sop[0] for sop in functools.chain(src_operands, dstsrc_operands)])
-            self.loop_body += '%"dstsrc" = call {dst_type} asm sideeffect "{instruction}", "{constraints}", ({args})'.format(
+                ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
+                [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
+            args = ', '.join(['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands] +
+                             ['{type} %dstsrc{index}'.format(type=dop[1], index=i)
+                              for i, dop in enumerate(dstsrc_operands)])
+            self.loop_body += ('%"dstsrc{index}.out" = call {dst_type} asm sideeffect'
+                               ' "{instruction}", "{constraints}" ({args})\n').format(
+                index=i,
                 dst_type=dstsrc_op[1],
                 instruction=instruction,
                 constraints=constraints,
-                
+                args=args
             )
             
         
-        for i, dst_op in enumerate(functools.chain(dst_operands)):
+        for i, dst_op in enumerate(dst_operands):
             # No phi functions necessary
             pass
         
-        for i, src_op in enumerate(functools.chain(src_operands)):
+        for i, src_op in enumerate(src_operands):
             # No phi functions necessary
             pass
                 
@@ -203,8 +213,8 @@ class LatencytTest(InstructionTest):
         
         # Set %"ret" to something, needs to be a constant or phi function
         self.loop_tail = textwrap.dedent('''\
-            %"ret" = phi i64 [{}, %"entry"], [%"dstsrc0.1", %"loop"]\
-            '''.format(dstsrc_operand[0][2]))
+            %"ret" = phi i64 [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
+            '''.format(dstsrc_operands[0][2]))
 
 
 if __name__ == '__main__':
@@ -213,130 +223,19 @@ if __name__ == '__main__':
     llvm.initialize_native_asmprinter()
     llvm.initialize_native_asmparser()
     
+    # Option 1: Construct using llvmlite's irbuilder
     module = construct_test_module()
     
-    # Alternative, use raw LLVM IR:
-    module = '''
-    define i64 @"test"(i64 %"N")
-    {
-    entry:
-      %"loop_cond" = icmp slt i64 0, %"N"
-      br i1 %"loop_cond", label %"loop", label %"end"
-    loop:
-      %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
-      %"checksum" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
-      %"extra_regs_1" = phi i64 [0, %"entry"], [%"extra_regs_1.1", %"loop"]
-      %"extra_regs_2" = phi i64 [0, %"entry"], [%"extra_regs_2.1", %"loop"]
-      %"extra_regs_3" = phi i64 [0, %"entry"], [%"extra_regs_3.1", %"loop"]
-      %"extra_regs_4" = phi i64 [0, %"entry"], [%"extra_regs_4.1", %"loop"]
-      %"extra_regs_5" = phi i64 [0, %"entry"], [%"extra_regs_5.1", %"loop"]
-      %"extra_regs_6" = phi i64 [0, %"entry"], [%"extra_regs_6.1", %"loop"]
-      %"extra_regs_7" = phi i64 [0, %"entry"], [%"extra_regs_7.1", %"loop"]
-      %"extra_regs_8" = phi i64 [0, %"entry"], [%"extra_regs_8.1", %"loop"]
-      %"extra_regs_9" = phi i64 [0, %"entry"], [%"extra_regs_9.1", %"loop"]
-      %"extra_regs_10" = phi i64 [0, %"entry"], [%"extra_regs_10.1", %"loop"]
-      %"extra_regs_11" = phi i64 [0, %"entry"], [%"extra_regs_11.1", %"loop"]
-      %"asm" = call { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } asm sideeffect "
-          add $12, $0
-          add $12, $1
-          add $12, $2
-          add $12, $3
-          add $12, $4
-          add $12, $5
-          add $12, $6
-          add $12, $7
-          add $12, $8
-          add $12, $9
-          add $12, $10
-          add $12, $11",
-          "=r,=r,=r,=r,=r,=r,=r,=r,=r,=r,=r,=r,i,r,r,r,r,r,r,r,r,r,r,r,r"
-          (i64 1, i64 %"checksum", i64 %"extra_regs_1", i64 %"extra_regs_2", i64 %"extra_regs_3",
-           i64 %"extra_regs_4", i64 %"extra_regs_5", i64 %"extra_regs_6", i64 %"extra_regs_7",
-           i64 %"extra_regs_8", i64 %"extra_regs_9", i64 %"extra_regs_10", i64 %"extra_regs_11")
-      %"checksum.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 0
-      %"extra_regs_1.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 1
-      %"extra_regs_2.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 2
-      %"extra_regs_3.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 3
-      %"extra_regs_4.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 4
-      %"extra_regs_5.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 5
-      %"extra_regs_6.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 6
-      %"extra_regs_7.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 7
-      %"extra_regs_8.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 8
-      %"extra_regs_9.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 9
-      %"extra_regs_10.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 10
-      %"extra_regs_11.1" = extractvalue { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 } %"asm", 11
-      %"loop_counter.1" = add i64 %"loop_counter", 1
-      %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
-      br i1 %"loop_cond.1", label %"loop", label %"end"
-    end:
-      %"ret" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
-      ret i64 %"ret"
-    }
-    '''
+    # Option 2: Use raw LLVM IR file
+    with open('dev_test/x86_add_ir64_lat1.ll') as f:
+        module = f.read()
     
-    module = '''
-    define i64 @"test"(i64 %"N")
-    {
-    entry:
-      %"loop_cond" = icmp slt i64 0, %"N"
-      br i1 %"loop_cond", label %"loop", label %"end"
-    loop:
-      %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
-      %"dstsrc_0" = phi i64 [0, %"entry"], [%"dstsrc_0.1", %"loop"]
-      %"dstsrc_1" = phi i64 [0, %"entry"], [%"dstsrc_1.1", %"loop"]
-      %"dstsrc_2" = phi i64 [0, %"entry"], [%"dstsrc_2.1", %"loop"]
-      %"dstsrc_3" = phi i64 [0, %"entry"], [%"dstsrc_3.1", %"loop"]
-      %"dstsrc_4" = phi i64 [0, %"entry"], [%"dstsrc_4.1", %"loop"]
-      %"dstsrc_5" = phi i64 [0, %"entry"], [%"dstsrc_5.1", %"loop"]
-      %"dstsrc_6" = phi i64 [0, %"entry"], [%"dstsrc_6.1", %"loop"]
-      %"dstsrc_7" = phi i64 [0, %"entry"], [%"dstsrc_7.1", %"loop"]
-      %"dstsrc_8" = phi i64 [0, %"entry"], [%"dstsrc_8.1", %"loop"]
-      %"dstsrc_9" = phi i64 [0, %"entry"], [%"dstsrc_9.1", %"loop"]
-      %"dstsrc_10" = phi i64 [0, %"entry"], [%"dstsrc_10.1", %"loop"]
-      %"dstsrc_11" = phi i64 [0, %"entry"], [%"dstsrc_11.1", %"loop"]
-      %"dstsrc_0.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_0")
-      %"dstsrc_1.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_1")
-      %"dstsrc_2.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_2")
-      %"dstsrc_3.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_3")
-      %"dstsrc_4.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_4")
-      %"dstsrc_5.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_5")
-      %"dstsrc_6.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_6")
-      %"dstsrc_7.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_7")
-      %"dstsrc_8.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_8")
-      %"dstsrc_9.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_9")
-      %"dstsrc_10.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_10")
-      %"dstsrc_11.1" = call i64 asm sideeffect "add $1, $0", "=r,i,r" (i64 1, i64 %"dstsrc_11")
-      %"loop_counter.1" = add i64 %"loop_counter", 1
-      %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
-      br i1 %"loop_cond.1", label %"loop", label %"end"
-    end:
-      %"ret" = phi i64 [0, %"entry"], [%"dstsrc_0.1", %"loop"]
-      ret i64 %"ret"
-    }
-    '''
-    
-    module2 = '''
-    define i64 @"test"(i64 %"N")
-    {
-    entry:
-      %"loop_cond" = icmp slt i64 0, %"N"
-      br i1 %"loop_cond", label %"loop", label %"end"
-    loop:
-      %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
-      %"checksum" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
-      %"checksum.1" = call i64 asm sideeffect "
-          add $0, $1",
-          "*r,i" (i64 %"checksum", i64 1)
-      %"loop_counter.1" = add i64 %"loop_counter", 1
-      %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
-      br i1 %"loop_cond.1", label %"loop", label %"end"
-    end:
-      %"ret" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
-      ret i64 %"ret"
-    }
-    '''
-    
-    module3 = str(InstructionTest())
+    # Option 3: Construct with home grown IR builder
+    # module = str(InstructionTest())
+    module = str(LatencytTest(instruction='addq $1, $0',
+                              dst_operands=(),
+                              dstsrc_operands=(('r','i64', '0'),),
+                              src_operands=(('i','i64', '1'),)))
     
     print('=== LLVM IR')
     print(module)
@@ -365,7 +264,7 @@ if __name__ == '__main__':
         # Now 'cfunc' is an actual callable we can invoke
         # TODO replace time.clock with a C implemententation for less overhead
         N = 100000000
-        for i in range(100):
+        for i in range(10):
             start = time.perf_counter()
             res = cfunc(N)
             end = time.perf_counter()
