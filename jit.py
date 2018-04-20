@@ -11,6 +11,16 @@ import psutil
 # TODOs
 # * API to create test scenarios
 #   * DSL?
+# * Test cases:
+#   * Instructions:
+#     * scalar
+#     * packed
+#     * memory references
+#   * Single Latency
+#   * Single Throughput
+#   * Combined Latency
+#   * Combined throughput
+#   * Random throughput
 # * IACA marked binary output generation
 # * Fuzzing algorithm
 # * CLI
@@ -140,19 +150,20 @@ class LatencytTest(InstructionTest):
     def __init__(self, instruction='addq $1, $0',
                  dst_operands=(),
                  dstsrc_operands=(('r','i64', '0'),),
-                 src_operands=(('i','i64', '1'),)):
+                 src_operands=(('i','i64', '1'),),
+                 instruction_count=1):
         '''
         instruction's operands ($N) refer to the order of opernads found in dst + dstsrc + src.
         '''
         self.loop_init = ''
         self.loop_body = ''
-        if len(dst_operands) + len(dstsrc_operands) != 1:
-            raise ValueError("There must be exactly one dst or dstsrc oprand. Future versions "
-                            "might support multiple or no outputs.")
+        if len(dst_operands) + len(dstsrc_operands) > 1:
+            raise NotImplemented("Currently only none or exactly one dst or dstsrc operand is "
+                                 "supported.")
 
         self.ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
         
-        # Part 1: PHI functions
+        # Part 1: PHI functions and initializations
         for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
             # constraint code, llvm type string, initial value
             if dstsrc_op[0] == 'r':
@@ -162,59 +173,63 @@ class LatencytTest(InstructionTest):
                     'phi {type} [{initial}, %"entry"], [%"dstsrc{index}.out", %"loop"]\n').format(
                         index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
             # TODO add support for memory operands
-            #elif dst_op[0] == 'm':
-            #    # memory operand
+            elif dstsrc_op[0] == 'm':
+                # memory operand
+                self.loop_init += (
+                    '%"dstsrc{index}" = alloca {type}\n'
+                    'store {type} {initial}, {type}* %"dstsrc{index}"\n').format(
+                        index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
             else:
-                raise ValueError("Operand type in {!r} is not supported here.".format(dstsrc_op))
+                raise NotImplemented("Operand type in {!r} is not yet supported.".format(dstsrc_op))
         
         for i, dst_op in enumerate(itertools.chain(dst_operands)):
-            # No phi functions necessary
-            pass
-        
-        for i, src_op in enumerate(itertools.chain(src_operands)):
             # No phi functions necessary
             pass
         
         # Part 2: Inline ASM call
         for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
             # Build instruction from instruction and operands
-            # TODO either document order of operands in instruction string or replace by DSL
+            # TODO support multiple dstsrc operands
+            # TODO support dst and dstsrc operands at the same time
             # Build constraint string from operands
             constraints = ','.join(
                 ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
                 [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
-            args = ', '.join(['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands] +
-                             ['{type} %dstsrc{index}'.format(type=dop[1], index=i)
-                              for i, dop in enumerate(dstsrc_operands)])
+            
+            operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
+            for i, dop in enumerate(dstsrc_operands):
+                type_ = dop[1]
+                if dop[0] == 'm':
+                    # Make pointer if it is a memory reference
+                    type_ += '*'
+                operands.append('{type} %dstsrc{index}'.format(type=type_, index=i))
+            args = ', '.join(operands)
+            dst_type = dstsrc_op[1]
+            if dstsrc_op[0] == 'm':
+                dst_type += '*'
             self.loop_body += ('%"dstsrc{index}.out" = call {dst_type} asm sideeffect'
                                ' "{instruction}", "{constraints}" ({args})\n').format(
                 index=i,
-                dst_type=dstsrc_op[1],
+                dst_type=dst_type,
                 instruction=instruction,
                 constraints=constraints,
                 args=args
             )
             
-        
         for i, dst_op in enumerate(dst_operands):
-            # No phi functions necessary
-            pass
-        
-        for i, src_op in enumerate(src_operands):
-            # No phi functions necessary
-            pass
-                
-        textwrap.dedent('''\
-            %"checksum" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
-            %"checksum.1" = call i64 asm sideeffect "
-                add $1, $0",
-                "=r,i,r" (i64 1, i64 %"checksum")\
-            ''')
+            # FIXME support dst operands
+            # TODO support dst and dstsrc operands at the same time
+            raise NotImplemented("Destination operands are not yet implemented")
         
         # Set %"ret" to something, needs to be a constant or phi function
-        self.loop_tail = textwrap.dedent('''\
-            %"ret" = phi i64 [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
-            '''.format(dstsrc_operands[0][2]))
+        if dstsrc_operands[0][0] == 'm':
+            self.loop_tail = textwrap.dedent('''\
+                %"ret" = load {type}, {type}* %"dstsrc0"\
+                '''.format(type=dstsrc_operands[0][1]))
+        else:
+            self.loop_tail = textwrap.dedent('''\
+                %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
+                '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
 
 
 if __name__ == '__main__':
@@ -232,11 +247,29 @@ if __name__ == '__main__':
     
     # Option 3: Construct with home grown IR builder
     # module = str(InstructionTest())
+    # immediate source
     module = str(LatencytTest(instruction='addq $1, $0',
                               dst_operands=(),
                               dstsrc_operands=(('r','i64', '0'),),
                               src_operands=(('i','i64', '1'),)))
+
+    # register source
+    module = str(LatencytTest(instruction='addq $1, $0',
+                              dst_operands=(),
+                              dstsrc_operands=(('r','i64', '0'),),
+                              src_operands=(('r','i64', '1'),)))
     
+    # mem ref source
+    module = str(LatencytTest(instruction='addq $1, $0',
+                              dst_operands=(),
+                              dstsrc_operands=(('r','i64', '0'),),
+                              src_operands=(('m','i64', '1'),)))
+    
+    # TODO mem ref source destination
+    #module = str(LatencytTest(instruction='addq $1, $0',
+    #                          dst_operands=(),
+    #                          dstsrc_operands=(),
+    #                          src_operands=(('m','i64', '0'), ('i','i64', '1'))))
     print('=== LLVM IR')
     print(module)
     
