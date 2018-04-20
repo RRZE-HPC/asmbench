@@ -260,10 +260,16 @@ if __name__ == '__main__':
                               src_operands=(('r','i64', '1'),)))
     
     # mem ref source
-    module = str(LatencytTest(instruction='addq $1, $0',
+    module = str(LatencytTest(instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
                               dst_operands=(),
                               dstsrc_operands=(('r','i64', '0'),),
                               src_operands=(('m','i64', '1'),)))
+    
+    # multiple instructions
+    module = str(LatencytTest(instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
+                              dst_operands=(),
+                              dstsrc_operands=(('i','i64', '0'),),
+                              src_operands=(('r','i64', '1'),)))
     
     # TODO mem ref source destination
     #module = str(LatencytTest(instruction='addq $1, $0',
