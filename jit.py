@@ -268,8 +268,8 @@ if __name__ == '__main__':
     # multiple instructions
     module = str(LatencytTest(instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
                               dst_operands=(),
-                              dstsrc_operands=(('i','i64', '0'),),
-                              src_operands=(('r','i64', '1'),)))
+                              dstsrc_operands=(('r','i64', '0'),),
+                              src_operands=(('i','i64', '1'),)))
     
     # TODO mem ref source destination
     #module = str(LatencytTest(instruction='addq $1, $0',
