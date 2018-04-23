@@ -13,14 +13,15 @@ import psutil
 #   * DSL?
 # * Test cases:
 #   * Instructions:
-#     * scalar
-#     * packed
-#     * memory references
+#     * arithmetics \w reg and/or imm.
+#       * scalar
+#       * packed
+#     * lea
+#     * LOAD / mov \w mem
 #   * Single Latency
 #   * Single Throughput
-#   * Combined Latency
-#   * Combined throughput
-#   * Random throughput
+#   * Combined Throughput
+#   * Random Throughput
 # * IACA marked binary output generation
 # * Fuzzing algorithm
 # * CLI
@@ -146,20 +147,25 @@ class InstructionTest:
                 loop_tail=textwrap.indent(self.loop_tail, '  '))
 
 
-class LatencytTest(InstructionTest):
+class ArithmeticLatencytTest(InstructionTest):
     def __init__(self, instruction='addq $1, $0',
                  dst_operands=(),
                  dstsrc_operands=(('r','i64', '0'),),
-                 src_operands=(('i','i64', '1'),),
-                 instruction_count=1):
+                 src_operands=(('i','i64', '1'),)):
         '''
+        Build LLVM IR for arithmetic instruction latency benchmark without memory references.
+                 
+        Currently only one destination (dst) or combined destination and source (dstsrc) operand
+        is allowed. Only 
         instruction's operands ($N) refer to the order of opernads found in dst + dstsrc + src.
         '''
         self.loop_init = ''
         self.loop_body = ''
-        if len(dst_operands) + len(dstsrc_operands) > 1:
-            raise NotImplemented("Currently only none or exactly one dst or dstsrc operand is "
-                                 "supported.")
+        if len(dst_operands) + len(dstsrc_operands) != 1:
+            raise NotImplemented("Must have exactly one dst or dstsrc operand.")
+        if not all([op[0] in 'ir'
+                    for op in itertools.chain(dst_operands, dstsrc_operands, src_operands)]):
+            raise NotImplemented("This class only supports register and immediate operands.")
 
         self.ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
         
@@ -172,19 +178,14 @@ class LatencytTest(InstructionTest):
                     '%"dstsrc{index}" = '
                     'phi {type} [{initial}, %"entry"], [%"dstsrc{index}.out", %"loop"]\n').format(
                         index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
-            # TODO add support for memory operands
-            elif dstsrc_op[0] == 'm':
-                # memory operand
-                self.loop_init += (
-                    '%"dstsrc{index}" = alloca {type}\n'
-                    'store {type} {initial}, {type}* %"dstsrc{index}"\n').format(
-                        index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
             else:
                 raise NotImplemented("Operand type in {!r} is not yet supported.".format(dstsrc_op))
         
         for i, dst_op in enumerate(itertools.chain(dst_operands)):
             # No phi functions necessary
-            pass
+            # TODO build phi function to switch between source and destination from one iteration 
+            # to next
+            raise NotImplemented("Destination operand is not yet implemented")
         
         # Part 2: Inline ASM call
         for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
@@ -198,19 +199,12 @@ class LatencytTest(InstructionTest):
             
             operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
             for i, dop in enumerate(dstsrc_operands):
-                type_ = dop[1]
-                if dop[0] == 'm':
-                    # Make pointer if it is a memory reference
-                    type_ += '*'
-                operands.append('{type} %dstsrc{index}'.format(type=type_, index=i))
+                operands.append('{type} %dstsrc{index}'.format(type=dop[1], index=i))
             args = ', '.join(operands)
-            dst_type = dstsrc_op[1]
-            if dstsrc_op[0] == 'm':
-                dst_type += '*'
             self.loop_body += ('%"dstsrc{index}.out" = call {dst_type} asm sideeffect'
                                ' "{instruction}", "{constraints}" ({args})\n').format(
                 index=i,
-                dst_type=dst_type,
+                dst_type=dstsrc_op[1],
                 instruction=instruction,
                 constraints=constraints,
                 args=args
@@ -219,17 +213,131 @@ class LatencytTest(InstructionTest):
         for i, dst_op in enumerate(dst_operands):
             # FIXME support dst operands
             # TODO support dst and dstsrc operands at the same time
-            raise NotImplemented("Destination operands are not yet implemented")
+            raise NotImplemented("Destination operand is not yet implemented")
         
         # Set %"ret" to something, needs to be a constant or phi function
-        if dstsrc_operands[0][0] == 'm':
-            self.loop_tail = textwrap.dedent('''\
-                %"ret" = load {type}, {type}* %"dstsrc0"\
-                '''.format(type=dstsrc_operands[0][1]))
+        self.loop_tail = textwrap.dedent('''\
+            %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
+            '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
+
+
+class AddressGenerationLatencytTest(InstructionTest):
+    def __init__(self,
+                 offset=('i', 'i64', '0x42'),
+                 base=('r', 'i64', '0'),
+                 index=('r', 'i64', '0'),
+                 width=('i', None, '4'),
+                 destination='base'):
+        '''
+        Test for address generation modes.
+        
+        Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
+        or 'i' (immediate) and initial_value a string.
+        E.g., ('r', 'i64', '0') or ('i', None, '4')
+
+        +--------------------------------+-----------------------------+
+        | Mode                           | AT&T                        |
+        +--------------------------------+-----------------------------+
+        | Offset                         | leal           0x0100, %eax | <- no latency support
+        | Base                           | leal           (%esi), %eax |
+        | Offset + Base                  | leal         -8(%ebp), %eax |
+        | Offset + Index*Width           | leal   0x100(,%ebx,4), %eax |
+        | Offset + Base + Index*Width    | leal 0x8(%edx,%ebx,4), %eax |
+        +--------------------------------+-----------------------------+
+        OFFSET(BASE, INDEX, WIDTH) -> offset + base + index*width
+        offset: immediate integer (+/-)
+        base: register
+        index: register
+        width: immediate 1,2,4 or 8
+        '''
+        # Sanity checks:
+        if bool(index) ^ bool(width):
+            raise ValueError("Index and width both need to be set, or be None.")
+        elif index and width:
+            if width[0] != 'i' or int(width[2]) not in [1,2,4,8]:
+                raise ValueError("Width may only be immediate 1,2,4 or 8.")
+            if index[0] != 'r':
+                raise ValueError("Index must be a register.")
+        
+        if offset and offset[0] != 'i':
+            raise ValueError("Offset must be an immediate.")
+        if base and base[0] != 'r':
+            raise ValueError("Offset must be a register.")
+        
+        if not index and not width and not offset and not base:
+            raise ValueError("Must provide at least an offset or base.")
+        
+        if destination == 'base' and not base:
+            raise ValueError("Destination may only be set to 'base' if base is set.")
+        elif destination == 'index' and not index:
+            raise ValueError("Destination may only be set to 'index' if index is set.")
+        elif destination not in ['base', 'index']:
+            raise ValueError("Destination must be set to 'base' or 'index'.")
+        
+        if not base and not index:
+            raise ValueError("Either base or index must be set for latency test to work.")
+        
+        self.loop_init = ''
+        self.loop_body = ''
+        
+        ops = ''
+        if offset:
+            ops += offset[2]
+        if base:
+            ops += '($0'
+            if width and index:
+                ops += ',$1,{}'.format(width[2])
+            ops += ')'
+            
+            if destination == 'base':
+                ops += ', $0'
+            else:  # destination == 'index'
+                ops += ', $1'
         else:
-            self.loop_tail = textwrap.dedent('''\
-                %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
-                '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
+            if width and index:
+                ops += '(,$0,{}), $0'.format(width[2])
+        ops += ' '
+        
+        if destination == 'base':
+            self.ret_llvmtype = base[1]
+            destination_reg = base
+        else:  # destination == 'index'
+            self.ret_llvmtype = index[1]
+            destination_reg = index
+        
+        # Part 1: PHI function for destination
+        self.loop_body += (
+            '%"{name}" = '
+            'phi {type} [{initial}, %"entry"], [%"{name}.out", %"loop"]\n').format(
+                name=destination, type=destination_reg[1], initial=destination_reg[2])
+        
+        constraints = '=r,r'
+        if base and index:
+            constraints += ',r'
+            if destination == 'index':
+                args = '{base_type} %"{base_name}", {index_type} {index_value}'.format(
+                    base_type=base[1], base_name=destination,
+                    index_type=index[1], index_value=index[2])
+            else:  # destination == 'index':
+                args ='{base_type} {base_value}, {index_type} %"{index_name}"'.format(
+                    base_type=base[1], base_value=base[2],
+                    index_type=index[1], index_name=destination)
+        else:
+            args = '{type} %"{name}"'.format(type=destination_reg[1], name=destination)
+        
+        self.loop_body += ('%"{name}.out" = call {type} asm sideeffect'
+                           ' "lea {ops}", "{constraints}" ({args})\n').format(
+            name=destination,
+            type=destination_reg[1],
+            ops=ops,
+            constraints=constraints,
+            args=args
+        )
+
+        # Set %"ret" to something, needs to be a constant or phi function
+        self.loop_tail = textwrap.dedent('''\
+            %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}.out", %"loop"]\
+            '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1]))
 
 
 if __name__ == '__main__':
@@ -238,76 +346,101 @@ if __name__ == '__main__':
     llvm.initialize_native_asmprinter()
     llvm.initialize_native_asmparser()
     
+    modules = []
+    
     # Option 1: Construct using llvmlite's irbuilder
-    module = construct_test_module()
+    modules.append(construct_test_module())
     
     # Option 2: Use raw LLVM IR file
     with open('dev_test/x86_add_ir64_lat1.ll') as f:
-        module = f.read()
+        modules.append(f.read())
     
     # Option 3: Construct with home grown IR builder
     # module = str(InstructionTest())
     # immediate source
-    module = str(LatencytTest(instruction='addq $1, $0',
-                              dst_operands=(),
-                              dstsrc_operands=(('r','i64', '0'),),
-                              src_operands=(('i','i64', '1'),)))
+    modules.append(str(ArithmeticLatencytTest(
+        instruction='addq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('i','i64', '1'),))))
 
     # register source
-    module = str(LatencytTest(instruction='addq $1, $0',
-                              dst_operands=(),
-                              dstsrc_operands=(('r','i64', '0'),),
-                              src_operands=(('r','i64', '1'),)))
-    
-    # mem ref source
-    module = str(LatencytTest(instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
-                              dst_operands=(),
-                              dstsrc_operands=(('r','i64', '0'),),
-                              src_operands=(('m','i64', '1'),)))
+    modules.append(str(ArithmeticLatencytTest(
+        instruction='addq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('r','i64', '1'),))))
     
     # multiple instructions
-    module = str(LatencytTest(instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
-                              dst_operands=(),
-                              dstsrc_operands=(('r','i64', '0'),),
-                              src_operands=(('i','i64', '1'),)))
+    modules.append(str(ArithmeticLatencytTest(
+        instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('i','i64', '1'),))))
     
-    # TODO mem ref source destination
-    #module = str(LatencytTest(instruction='addq $1, $0',
-    #                          dst_operands=(),
-    #                          dstsrc_operands=(),
-    #                          src_operands=(('m','i64', '0'), ('i','i64', '1'))))
-    print('=== LLVM IR')
-    print(module)
+    modules.append(str(AddressGenerationLatencytTest()))
     
-    # Convert textual LLVM IR into in-memory representation.
-    llvm_module = llvm.parse_assembly(str(module))
-    llvm_module.verify()
+    modules.append(str(AddressGenerationLatencytTest(
+        offset=None,
+        base=('r', 'i64', '666'),
+        index=None,
+        width=None,
+        destination='base')))
     
-    # Compile the module to machine code using MCJIT
-    tm = llvm.Target.from_default_triple().create_target_machine()
-    tm.set_asm_verbosity(100)
-    with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
-        ee.finalize_object()
-        print('=== Assembly')
-        print(tm.emit_assembly(llvm_module))
+    modules.append(str(AddressGenerationLatencytTest(
+        offset=None,
+        base=None,
+        index=('r', 'i64', '1'),
+        width=('i', None, '4'),
+        destination='index')))
+    
+    modules.append(str(AddressGenerationLatencytTest(
+        offset=('i', 'i64', '-0x8'),
+        base=None,
+        index=('r', 'i64', '51'),
+        width=('i', None, '4'),
+        destination='index')))
+    
+    modules.append(str(AddressGenerationLatencytTest(
+        offset=None,
+        base=('r', 'i64', '23'),
+        index=('r', 'i64', '12'),
+        width=('i', None, '4'),
+        destination='base')))
+    
+    for module in modules:
+        print('=== LLVM IR')
+        print(module)
+    
+        # Convert textual LLVM IR into in-memory representation.
+        llvm_module = llvm.parse_assembly(str(module))
+        llvm_module.verify()
+    
+        # Compile the module to machine code using MCJIT
+        tm = llvm.Target.from_default_triple().create_target_machine()
+        tm.set_asm_verbosity(100)
+        with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
+            ee.finalize_object()
+            print('=== Assembly')
+            print(tm.emit_assembly(llvm_module))
         
-        # ??? ee.run_static_constructors()
-        # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
-        # code in memory.
-        cfptr = ee.get_function_address('test')
+            # ??? ee.run_static_constructors()
+            # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
+            # code in memory.
+            cfptr = ee.get_function_address('test')
     
-        # To convert an address to an actual callable thing we have to use
-        # CFUNCTYPE, and specify the arguments & return type.
-        cfunc = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)(cfptr)
+            # To convert an address to an actual callable thing we have to use
+            # CFUNCTYPE, and specify the arguments & return type.
+            cfunc = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)(cfptr)
     
-        # Now 'cfunc' is an actual callable we can invoke
-        # TODO replace time.clock with a C implemententation for less overhead
-        N = 100000000
-        for i in range(10):
-            start = time.perf_counter()
-            res = cfunc(N)
-            end = time.perf_counter()
-            benchtime = end-start
-            cur_freq = psutil.cpu_freq().current*1e6
-            print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(res, benchtime/N*cur_freq, benchtime))
+            # Now 'cfunc' is an actual callable we can invoke
+            # TODO replace time.clock with a C implemententation for less overhead
+            N = 100000000
+            for i in range(10):
+                start = time.perf_counter()
+                res = cfunc(N)
+                end = time.perf_counter()
+                benchtime = end-start
+                cur_freq = psutil.cpu_freq().current*1e6
+                print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(res, benchtime/N*cur_freq, benchtime))
     
