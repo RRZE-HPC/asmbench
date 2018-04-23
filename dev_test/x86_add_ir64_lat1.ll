@@ -7,8 +7,8 @@ loop:
   %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
   %"checksum" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
   %"checksum.1" = call i64 asm sideeffect "
-      add $0, $1",
-      "*r,i" (i64 %"checksum", i64 1)
+      addq $2, $1",
+      "=r,r,i" (i64 %"checksum", i64 1)
   %"loop_counter.1" = add i64 %"loop_counter", 1
   %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
   br i1 %"loop_cond.1", label %"loop", label %"end"
