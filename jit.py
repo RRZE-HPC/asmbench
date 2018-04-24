@@ -331,7 +331,7 @@ class LoadLatencyTest(InstructionTest):
         
         *chain_length* is the number of pointers to place in memory.
         *repeat* is the number of iterations the chain run through.
-        *structure* may be 'ring' (1-offsets) or 'reverse' (jump back and forth) or 'random'.
+        *structure* may be 'linear' (1-offsets) or 'reverse' (jump back and forth) or 'random'.
         '''
         InstructionTest.__init__(self)
         self.loop_init = ''
@@ -346,7 +346,8 @@ class LoadLatencyTest(InstructionTest):
         self.pointer_field = (element_type * chain_length)()
 
         # Initialize pointer field
-        if structure == 'ring':
+        # Field must represent a ring of pointers
+        if structure == 'linear':
             for i in range(chain_length):
                 self.pointer_field[i] = ctypes.cast(
                     ctypes.pointer(self.pointer_field[(i+1)%chain_length]), element_type)
@@ -355,7 +356,8 @@ class LoadLatencyTest(InstructionTest):
                 self.pointer_field[i] = ctypes.cast(
                     ctypes.pointer(self.pointer_field[(chain_length-i)%chain_length]), element_type)
         elif structure == 'random':
-            shuffled_indices = random.shuffle(list(range(i)))
+            shuffled_indices = list(range(chain_length))
+            random.shuffle(shuffled_indices)
             for i in range(chain_length):
                 self.pointer_field[i] = ctypes.cast(
                     ctypes.pointer(self.pointer_field[shuffled_indices[i]]), element_type)
@@ -363,7 +365,7 @@ class LoadLatencyTest(InstructionTest):
     def prepare_arguments(self):
         return (self.pointer_field, self.repeat)
     
-    def get_ir(self, count_length=False):
+    def get_ir(self):
         '''
         Return LLVM IR equivalent of:
         
@@ -471,8 +473,16 @@ if __name__ == '__main__':
     modules = []
     modules.append(LoadLatencyTest(
         chain_length=2048,
-        repeat=1000000,
-        structure='ring'))
+        repeat=100000,
+        structure='linear'))
+    modules.append(LoadLatencyTest(
+        chain_length=2048,
+        repeat=100000,
+        structure='random'))
+    modules.append(LoadLatencyTest(
+        chain_length=2048,
+        repeat=100000,
+        structure='reverse'))
     
     for module in modules:
         print("=== LLVM")
