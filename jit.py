@@ -331,7 +331,7 @@ class LoadLatencyTest(InstructionTest):
         
         *chain_length* is the number of pointers to place in memory.
         *repeat* is the number of iterations the chain run through.
-        *structure* may be 'linear' (1-offsets) or 'reverse' (jump back and forth) or 'random'.
+        *structure* may be 'linear' (1-offsets) or 'random'.
         '''
         InstructionTest.__init__(self)
         self.loop_init = ''
@@ -351,16 +351,16 @@ class LoadLatencyTest(InstructionTest):
             for i in range(chain_length):
                 self.pointer_field[i] = ctypes.cast(
                     ctypes.pointer(self.pointer_field[(i+1)%chain_length]), element_type)
-        elif structure == 'jump':
-            for i in range(chain_length):
-                self.pointer_field[i] = ctypes.cast(
-                    ctypes.pointer(self.pointer_field[(chain_length-i)%chain_length]), element_type)
         elif structure == 'random':
             shuffled_indices = list(range(chain_length))
             random.shuffle(shuffled_indices)
             for i in range(chain_length):
-                self.pointer_field[i] = ctypes.cast(
-                    ctypes.pointer(self.pointer_field[shuffled_indices[i]]), element_type)
+                self.pointer_field[shuffled_indices[i]] = ctypes.cast(
+                    ctypes.pointer(self.pointer_field[shuffled_indices[(i+1)%chain_length]]),
+                    element_type)
+        else:
+            raise ValueError("Given structure is not supported. Supported are: "
+                             "linear and random.")
     
     def prepare_arguments(self):
         return (self.pointer_field, self.repeat)
@@ -479,10 +479,6 @@ if __name__ == '__main__':
         chain_length=2048,
         repeat=100000,
         structure='random'))
-    modules.append(LoadLatencyTest(
-        chain_length=2048,
-        repeat=100000,
-        structure='reverse'))
     
     for module in modules:
         print("=== LLVM")
