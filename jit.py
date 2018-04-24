@@ -4,6 +4,7 @@ import sys
 import time
 import textwrap
 import itertools
+import random
 
 import llvmlite.binding as llvm
 import psutil
@@ -27,70 +28,6 @@ import psutil
 # * CLI
 # * C based timing routine? As an extension?
 # * make sanity checks during runtime, check for fixed frequency and pinning
-
-def construct_test_module():
-    import llvmlite.ir as ll
-    # Create a new module with a function implementing this:
-    #
-    # int test(int N) {
-    #   int i=0
-    #   while(i<N) {
-    #       // ASM things go here
-    #       i++;
-    #   }
-    #   return i;  // replace by checksum like value
-    # }
-    
-    # Module configuration
-    counter_type = ll.IntType(64)
-    checksum_type = ll.IntType(64)  # ll.DoubleType()
-    checksum_init = checksum_type(0)
-    
-    # Module
-    module = ll.Module()
-    func_ty = ll.FunctionType(counter_type, [counter_type])
-    func = ll.Function(module, func_ty, name='test')
-    func.args[0].name = 'N'
-    
-    # Code
-    bb_entry = func.append_basic_block('entry')
-    irbuilder = ll.IRBuilder(bb_entry)
-    bb_loop = irbuilder.append_basic_block('loop')
-    bb_end = irbuilder.append_basic_block('end')
-    counter_init = counter_type(0)
-    loop_cond = irbuilder.icmp_signed('<', counter_init, func.args[0], name="loop_cond")
-    irbuilder.cbranch(loop_cond, bb_loop, bb_end)
-    
-    with irbuilder.goto_block(bb_loop):
-        # Loop mechanics & Checksum (1)
-        loop_counter_phi = irbuilder.phi(counter_type, name="loop_counter")
-        checksum_phi = irbuilder.phi(checksum_type, name="checksum")
-        loop_counter_phi.add_incoming(counter_init, bb_entry)
-        loop_counter = irbuilder.add(loop_counter_phi, ll.Constant(counter_type, 1), name="loop_counter")
-        loop_counter_phi.add_incoming(loop_counter, bb_loop)
-        checksum_phi.add_incoming(checksum_init, bb_entry)
-        
-        # Insert assembly here:
-        # IRBuilder.asm(ftype, asm, constraint, args, side_effect, name='')
-        asm_ftype = ll.FunctionType(counter_type, [counter_type])
-        checksum = irbuilder.asm(
-            asm_ftype,
-            "add $2, $0\n",
-            "=r,r,i",
-            (checksum_phi, checksum_type(1)),
-            side_effect=True, name="asm")
-        
-        # Loop mechanics & Checksum (2)
-        checksum_phi.add_incoming(checksum, bb_loop)
-        loop_cond = irbuilder.icmp_signed('<', loop_counter, func.args[0], name="loop_cond")
-        irbuilder.cbranch(loop_cond, bb_loop, bb_end)
-    with irbuilder.goto_block(bb_end):
-        ret_phi = irbuilder.phi(counter_type, name="ret")
-        ret_phi.add_incoming(checksum_init, bb_entry)
-        ret_phi.add_incoming(checksum, bb_loop)
-        irbuilder.ret(ret_phi)
-    
-    return module
         
 
 class InstructionTest:
@@ -101,11 +38,19 @@ class InstructionTest:
         'i64': ctypes.c_int64,
         'f32': ctypes.c_float,
         'f64': ctypes.c_double,
+        'i8*': ctypes.POINTER(ctypes.c_int8),
+        'i16*': ctypes.POINTER(ctypes.c_int16),
+        'i32*': ctypes.POINTER(ctypes.c_int32),
+        'i64*': ctypes.POINTER(ctypes.c_int64),
+        'f32*': ctypes.POINTER(ctypes.c_float),
+        'f64*': ctypes.POINTER(ctypes.c_double),
     }
     def __init__(self):
         self.loop_init = ''
         self.ret_llvmtype = 'i64'
         self.ret_ctype = self.LLVM2CTYPE[self.ret_llvmtype]
+        self.function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
+        self.N = 100000000
         
         # Do interesting work
         self.loop_body = textwrap.dedent('''\
@@ -120,7 +65,7 @@ class InstructionTest:
             %"ret" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]\
             ''')
     
-    def __str__(self):
+    def get_ir(self):
         return textwrap.dedent('''\
             define {ret_type} @"test"(i64 %"N")
             {{
@@ -145,6 +90,43 @@ class InstructionTest:
                 loop_init=textwrap.indent(self.loop_init, '  '),
                 loop_body=textwrap.indent(self.loop_body, '  '),
                 loop_tail=textwrap.indent(self.loop_tail, '  '))
+    
+    def prepare_arguments(self):
+        '''Build argument tuple, to be passed to low level function.'''
+        return (self.N,)
+    
+    def build_and_execute(self, print_assembly=True):
+        llvm_module = llvm.parse_assembly(self.get_ir())
+        llvm_module.verify()
+    
+        # Compile the module to machine code using MCJIT
+        tm = llvm.Target.from_default_triple().create_target_machine()
+        tm.set_asm_verbosity(100)
+        with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
+            ee.finalize_object()
+            print('=== Assembly')
+            print(tm.emit_assembly(llvm_module))
+        
+            # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
+            # code in memory.
+            cfptr = ee.get_function_address('test')
+    
+            # To convert an address to an actual callable thing we have to use
+            # CFUNCTYPE, and specify the arguments & return type.
+            cfunc = self.function_ctype(cfptr)
+    
+            # Now 'cfunc' is an actual callable we can invoke
+            # TODO replace time.clock with a C implemententation for less overhead
+            # TODO return result in machine readable format
+            args = self.prepare_arguments()
+            for i in range(10):
+                start = time.perf_counter()
+                res = cfunc(*args)
+                end = time.perf_counter()
+                benchtime = end-start
+                cur_freq = psutil.cpu_freq().current*1e6
+                print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(
+                    res, benchtime/self.N*cur_freq, benchtime))
 
 
 class ArithmeticLatencytTest(InstructionTest):
@@ -159,6 +141,7 @@ class ArithmeticLatencytTest(InstructionTest):
         is allowed. Only 
         instruction's operands ($N) refer to the order of opernads found in dst + dstsrc + src.
         '''
+        InstructionTest.__init__(self)
         self.loop_init = ''
         self.loop_body = ''
         if len(dst_operands) + len(dstsrc_operands) != 1:
@@ -250,6 +233,7 @@ class AddressGenerationLatencytTest(InstructionTest):
         index: register
         width: immediate 1,2,4 or 8
         '''
+        InstructionTest.__init__(self)
         # Sanity checks:
         if bool(index) ^ bool(width):
             raise ValueError("Index and width both need to be set, or be None.")
@@ -340,6 +324,89 @@ class AddressGenerationLatencytTest(InstructionTest):
             '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1]))
 
 
+class LoadLatencyTest(InstructionTest):
+    def __init__(self, chain_length=1024, repeat=100, structure='ring'):
+        '''
+        Build LLVM IR benchmark to test L1 load latency using pointer chasing.
+        
+        *chain_length* is the number of pointers to place in memory.
+        *repeat* is the number of iterations the chain run through.
+        *structure* may be 'ring' (1-offsets) or 'reverse' (jump back and forth) or 'random'.
+        '''
+        InstructionTest.__init__(self)
+        self.loop_init = ''
+        self.loop_body = ''
+        self.loop_tail = ''
+        element_type = ctypes.POINTER(ctypes.c_int)
+        self.function_ctype = ctypes.CFUNCTYPE(
+            ctypes.c_int, ctypes.POINTER(element_type), ctypes.c_int)
+        self.chain_length = chain_length
+        self.repeat = repeat
+        self.N = chain_length*repeat
+        self.pointer_field = (element_type * chain_length)()
+
+        # Initialize pointer field
+        if structure == 'ring':
+            for i in range(chain_length):
+                self.pointer_field[i] = ctypes.cast(
+                    ctypes.pointer(self.pointer_field[(i+1)%chain_length]), element_type)
+        elif structure == 'jump':
+            for i in range(chain_length):
+                self.pointer_field[i] = ctypes.cast(
+                    ctypes.pointer(self.pointer_field[(chain_length-i)%chain_length]), element_type)
+        elif structure == 'random':
+            shuffled_indices = random.shuffle(list(range(i)))
+            for i in range(chain_length):
+                self.pointer_field[i] = ctypes.cast(
+                    ctypes.pointer(self.pointer_field[shuffled_indices[i]]), element_type)
+    
+    def prepare_arguments(self):
+        return (self.pointer_field, self.repeat)
+    
+    def get_ir(self, count_length=False):
+        '''
+        Return LLVM IR equivalent of:
+        
+        int test(int** ptrf, int repeat) {
+            int** p0 = (int**)ptrf[0];
+            int i = 0;
+            while(i < N) {
+                int** p = (int**)*p0;
+                while(p != p0) {
+                    p = (int**)*p;
+                }
+                i++;
+            }
+            return i;
+        }
+        '''
+        return textwrap.dedent('''
+        define i32 @test(i32**, i32) {
+          %3 = bitcast i32** %0 to i32***
+          %4 = load i32**, i32*** %3, align 8
+          %5 = icmp sgt i32 %1, 0
+          br i1 %5, label %6, label %17
+        
+          br label %7
+        
+          %8 = phi i32 [ %15, %14 ], [ 0, %6 ]
+          br label %9
+        
+          %10 = phi i32** [ %4, %7 ], [ %12, %9 ]
+          %11 = bitcast i32** %10 to i32***
+          %12 = load i32**, i32*** %11, align 8
+          %13 = icmp eq i32** %12, %4
+          br i1 %13, label %14, label %9
+        
+          %15 = add i32 %8, 1
+          %16 = icmp eq i32 %15, %1
+          br i1 %16, label %17, label %7
+        
+          %18 = phi i32 [ 0, %2 ], [ %1, %14 ]
+          ret i32 %18
+        }
+        ''')
+
 if __name__ == '__main__':
     llvm.initialize()
     llvm.initialize_native_target()
@@ -348,99 +415,67 @@ if __name__ == '__main__':
     
     modules = []
     
-    # Option 1: Construct using llvmlite's irbuilder
-    modules.append(construct_test_module())
-    
-    # Option 2: Use raw LLVM IR file
-    with open('dev_test/x86_add_ir64_lat1.ll') as f:
-        modules.append(f.read())
-    
-    # Option 3: Construct with home grown IR builder
-    # module = str(InstructionTest())
+    # Construct with home grown IR builder
+    modules.append(InstructionTest())
     # immediate source
-    modules.append(str(ArithmeticLatencytTest(
+    modules.append(ArithmeticLatencytTest(
         instruction='addq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),))))
+        src_operands=(('i','i64', '1'),)))
 
     # register source
-    modules.append(str(ArithmeticLatencytTest(
+    modules.append(ArithmeticLatencytTest(
         instruction='addq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('r','i64', '1'),))))
+        src_operands=(('r','i64', '1'),)))
     
     # multiple instructions
-    modules.append(str(ArithmeticLatencytTest(
+    modules.append(ArithmeticLatencytTest(
         instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),))))
+        src_operands=(('i','i64', '1'),)))
     
-    modules.append(str(AddressGenerationLatencytTest()))
+    modules.append(AddressGenerationLatencytTest())
     
-    modules.append(str(AddressGenerationLatencytTest(
+    modules.append(AddressGenerationLatencytTest(
         offset=None,
         base=('r', 'i64', '666'),
         index=None,
         width=None,
-        destination='base')))
+        destination='base'))
     
-    modules.append(str(AddressGenerationLatencytTest(
+    modules.append(AddressGenerationLatencytTest(
         offset=None,
         base=None,
         index=('r', 'i64', '1'),
         width=('i', None, '4'),
-        destination='index')))
+        destination='index'))
     
-    modules.append(str(AddressGenerationLatencytTest(
+    modules.append(AddressGenerationLatencytTest(
         offset=('i', 'i64', '-0x8'),
         base=None,
         index=('r', 'i64', '51'),
         width=('i', None, '4'),
-        destination='index')))
+        destination='index'))
     
-    modules.append(str(AddressGenerationLatencytTest(
+    modules.append(AddressGenerationLatencytTest(
         offset=None,
         base=('r', 'i64', '23'),
         index=('r', 'i64', '12'),
         width=('i', None, '4'),
-        destination='base')))
+        destination='base'))
+    
+    modules = []
+    modules.append(LoadLatencyTest(
+        chain_length=2048,
+        repeat=1000000,
+        structure='ring'))
     
     for module in modules:
-        print('=== LLVM IR')
-        print(module)
-    
-        # Convert textual LLVM IR into in-memory representation.
-        llvm_module = llvm.parse_assembly(str(module))
-        llvm_module.verify()
-    
-        # Compile the module to machine code using MCJIT
-        tm = llvm.Target.from_default_triple().create_target_machine()
-        tm.set_asm_verbosity(100)
-        with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
-            ee.finalize_object()
-            print('=== Assembly')
-            print(tm.emit_assembly(llvm_module))
-        
-            # ??? ee.run_static_constructors()
-            # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
-            # code in memory.
-            cfptr = ee.get_function_address('test')
-    
-            # To convert an address to an actual callable thing we have to use
-            # CFUNCTYPE, and specify the arguments & return type.
-            cfunc = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)(cfptr)
-    
-            # Now 'cfunc' is an actual callable we can invoke
-            # TODO replace time.clock with a C implemententation for less overhead
-            N = 100000000
-            for i in range(10):
-                start = time.perf_counter()
-                res = cfunc(N)
-                end = time.perf_counter()
-                benchtime = end-start
-                cur_freq = psutil.cpu_freq().current*1e6
-                print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(res, benchtime/N*cur_freq, benchtime))
+        print("=== LLVM")
+        print(module.get_ir())
+        module.build_and_execute()
     
