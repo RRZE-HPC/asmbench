@@ -5,6 +5,7 @@ import time
 import textwrap
 import itertools
 import random
+import collections
 
 import llvmlite.binding as llvm
 import psutil
@@ -30,7 +31,7 @@ import psutil
 # * make sanity checks during runtime, check for fixed frequency and pinning
         
 
-class InstructionTest:
+class Benchmark:
     LLVM2CTYPE = {
         'i8': ctypes.c_int8,
         'i16': ctypes.c_int16,
@@ -46,14 +47,14 @@ class InstructionTest:
         'f64*': ctypes.POINTER(ctypes.c_double),
     }
     def __init__(self):
-        self.loop_init = ''
-        self.ret_llvmtype = 'i64'
-        self.ret_ctype = self.LLVM2CTYPE[self.ret_llvmtype]
-        self.function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
-        self.iterations = 100000000
+        self._loop_init = ''
+        self._ret_llvmtype = 'i64'
+        self._ret_ctype = self.LLVM2CTYPE[self._ret_llvmtype]
+        self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
+        self._iterations = 100000000
         
         # Do interesting work
-        self.loop_body = textwrap.dedent('''\
+        self._loop_body = textwrap.dedent('''\
             %"checksum" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]
             %"checksum.1" = call i64 asm sideeffect "
                 add $1, $0",
@@ -61,9 +62,15 @@ class InstructionTest:
             ''')
         
         # Set %"ret" to something, needs to be a constant or phi function
-        self.loop_tail = textwrap.dedent('''\
+        self._loop_tail = textwrap.dedent('''\
             %"ret" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]\
             ''')
+    
+    def __repr__(self):
+        return '{}({})'.format(
+            self.__class__.__name__,
+            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
+                       if not k.startswith('_')]))
     
     def get_ir(self):
         return textwrap.dedent('''\
@@ -86,26 +93,28 @@ class InstructionTest:
               ret {ret_type} %"ret"
             }}
             ''').format(
-                ret_type=self.ret_llvmtype,
-                loop_init=textwrap.indent(self.loop_init, '  '),
-                loop_body=textwrap.indent(self.loop_body, '  '),
-                loop_tail=textwrap.indent(self.loop_tail, '  '))
+                ret_type=self._ret_llvmtype,
+                loop_init=textwrap.indent(self._loop_init, '  '),
+                loop_body=textwrap.indent(self._loop_body, '  '),
+                loop_tail=textwrap.indent(self._loop_tail, '  '))
     
     def prepare_arguments(self):
         '''Build argument tuple, to be passed to low level function.'''
-        return (self.iterations,)
+        return (self._iterations,)
     
-    def build_and_execute(self, print_assembly=True):
+    def build_and_execute(self, repeat=10, print_assembly=True):
         llvm_module = llvm.parse_assembly(self.get_ir())
         llvm_module.verify()
     
         # Compile the module to machine code using MCJIT
         tm = llvm.Target.from_default_triple().create_target_machine()
-        tm.set_asm_verbosity(100)
+        tm.set_asm_verbosity(0)
+        runtimes = []
         with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
             ee.finalize_object()
-            print('=== Assembly')
-            print(tm.emit_assembly(llvm_module))
+            if print_assembly:
+                print('=== Assembly')
+                print(tm.emit_assembly(llvm_module))
         
             # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
             # code in memory.
@@ -113,46 +122,51 @@ class InstructionTest:
     
             # To convert an address to an actual callable thing we have to use
             # CFUNCTYPE, and specify the arguments & return type.
-            cfunc = self.function_ctype(cfptr)
+            cfunc = self._function_ctype(cfptr)
     
             # Now 'cfunc' is an actual callable we can invoke
             # TODO replace time.clock with a C implemententation for less overhead
             # TODO return result in machine readable format
             args = self.prepare_arguments()
-            for i in range(10):
+            for i in range(repeat):
                 start = time.perf_counter()
                 res = cfunc(*args)
                 end = time.perf_counter()
-                benchtime = end-start
-                cur_freq = psutil.cpu_freq().current*1e6
-                print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(
-                    res, benchtime/self.iterations*cur_freq, benchtime))
+                runtimes.append(end-start)
+        
+        return {'iterations': self._iterations,
+                'runtimes': runtimes,
+                'frequency': psutil.cpu_freq().current*1e6}
 
 
-class ArithmeticThroughputTest(InstructionTest):
+class InstructionBenchmark(Benchmark):
     def __init__(self, instruction='addq $1, $0',
                  dst_operands=(),
                  dstsrc_operands=(('r','i64', '0'),),
                  src_operands=(('i','i64', '1'),),
                  parallelism=10):
         '''
-        Build LLVM IR for arithmetic instruction throughput benchmark without memory references.
+        Build LLVM IR for arithmetic instruction benchmark without memory references.
                  
         Currently only one destination (dst) or combined destination and source (dstsrc) operand
         is allowed. Only instruction's operands ($N) refer to the order of opernads found in
         dst + dstsrc + src.
         '''
-        InstructionTest.__init__(self)
+        Benchmark.__init__(self)
+        self.instruction = instruction
+        self.dst_operands = dst_operands
+        self.dstsrc_operands = dstsrc_operands
+        self.src_operands = src_operands
         self.parallelism = parallelism
-        self.loop_init = ''
-        self.loop_body = ''
+        self._loop_init = ''
+        self._loop_body = ''
         if len(dst_operands) + len(dstsrc_operands) != 1:
             raise NotImplemented("Must have exactly one dst or dstsrc operand.")
         if not all([op[0] in 'ir'
                     for op in itertools.chain(dst_operands, dstsrc_operands, src_operands)]):
             raise NotImplemented("This class only supports register and immediate operands.")
 
-        self.ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
+        self._ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
         
         # Part 1: PHI functions and initializations
         for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
@@ -160,7 +174,7 @@ class ArithmeticThroughputTest(InstructionTest):
             if dstsrc_op[0] == 'r':
                 # register operand
                 for p in range(self.parallelism):
-                    self.loop_body += (
+                    self._loop_body += (
                         '%"dstsrc{index}_{p}" = phi {type} '
                         '[{initial}, %"entry"], [%"dstsrc{index}_{p}.out", %"loop"]\n').format(
                             index=i, type=dstsrc_op[1], initial=dstsrc_op[2], p=p)
@@ -189,7 +203,7 @@ class ArithmeticThroughputTest(InstructionTest):
                     operands.append('{type} %dstsrc{index}_{p}'.format(type=dop[1], index=i, p=p))
                 args = ', '.join(operands)
                 
-                self.loop_body += (
+                self._loop_body += (
                     '%"dstsrc{index}_{p}.out" = call {dst_type} asm sideeffect'
                     ' "{instruction}", "{constraints}" ({args})\n').format(
                         index=i,
@@ -205,32 +219,12 @@ class ArithmeticThroughputTest(InstructionTest):
             raise NotImplemented("Destination operand is not yet implemented")
         
         # Set %"ret" to something, needs to be a constant or phi function
-        self.loop_tail = textwrap.dedent('''\
+        self._loop_tail = textwrap.dedent('''\
             %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0_0.out", %"loop"]\
             '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
 
 
-class ArithmeticLatencytTest(ArithmeticThroughputTest):
-    def __init__(self, instruction='addq $1, $0',
-                 dst_operands=(),
-                 dstsrc_operands=(('r','i64', '0'),),
-                 src_operands=(('i','i64', '1'),)):
-        '''
-        Build LLVM IR for arithmetic instruction latency benchmark without memory references.
-                 
-        Currently only one destination (dst) or combined destination and source (dstsrc) operand
-        is allowed. Only instruction's operands ($N) refer to the order of opernads found in
-        dst + dstsrc + src.
-        '''
-        super(ArithmeticLatencytTest, self).__init__(
-            instruction=instruction,
-            dst_operands=dst_operands,
-            dstsrc_operands=dstsrc_operands,
-            src_operands=src_operands,
-            parallelism=1)
-
-
-class AddressGenerationThroughputTest(InstructionTest):
+class AddressGenerationBenchmark(Benchmark):
     def __init__(self,
                  offset=('i', 'i64', '0x42'),
                  base=('r', 'i64', '0'),
@@ -239,7 +233,7 @@ class AddressGenerationThroughputTest(InstructionTest):
                  destination='base',
                  parallelism=10):
         '''
-        Throughput benchmark for address generation modes.
+        Benchmark for address generation modes.
         
         Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
         or 'i' (immediate) and initial_value a string.
@@ -260,7 +254,13 @@ class AddressGenerationThroughputTest(InstructionTest):
         index: register
         width: immediate 1,2,4 or 8
         '''
-        InstructionTest.__init__(self)
+        Benchmark.__init__(self)
+        self.offset = offset
+        self.base = base
+        self.index = index
+        self.width = width
+        self.destination = destination
+        self.parallelism = parallelism
         # Sanity checks:
         if bool(index) ^ bool(width):
             raise ValueError("Index and width both need to be set, or be None.")
@@ -288,8 +288,8 @@ class AddressGenerationThroughputTest(InstructionTest):
         if not base and not index:
             raise ValueError("Either base or index must be set for latency test to work.")
         
-        self.loop_init = ''
-        self.loop_body = ''
+        self._loop_init = ''
+        self._loop_body = ''
         
         ops = ''
         if offset:
@@ -310,15 +310,15 @@ class AddressGenerationThroughputTest(InstructionTest):
         ops += ' '
         
         if destination == 'base':
-            self.ret_llvmtype = base[1]
+            self._ret_llvmtype = base[1]
             destination_reg = base
         else:  # destination == 'index'
-            self.ret_llvmtype = index[1]
+            self._ret_llvmtype = index[1]
             destination_reg = index
         
         # Part 1: PHI function for destination
         for p in range(parallelism):
-            self.loop_body += (
+            self._loop_body += (
                 '%"{name}_{p}" = '
                 'phi {type} [{initial}, %"entry"], [%"{name}_{p}.out", %"loop"]\n').format(
                     name=destination, type=destination_reg[1], initial=destination_reg[2], p=p)
@@ -339,7 +339,7 @@ class AddressGenerationThroughputTest(InstructionTest):
             else:
                 args = '{type} %"{name}_{p}"'.format(type=destination_reg[1], name=destination, p=p)
             
-            self.loop_body += (
+            self._loop_body += (
                 '%"{name}_{p}.out" = call {type} asm sideeffect'
                 ' "lea {ops}", "{constraints}" ({args})\n').format(
                     name=destination,
@@ -350,89 +350,53 @@ class AddressGenerationThroughputTest(InstructionTest):
                     p=p)
 
         # Set %"ret" to something, needs to be a constant or phi function
-        self.loop_tail = textwrap.dedent('''\
+        self._loop_tail = textwrap.dedent('''\
             %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}_0.out", %"loop"]\
             '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1]))
 
-class AddressGenerationLatencytTest(AddressGenerationThroughputTest):
-    def __init__(self,
-                 offset=('i', 'i64', '0x42'),
-                 base=('r', 'i64', '0'),
-                 index=('r', 'i64', '0'),
-                 width=('i', None, '4'),
-                 destination='base'):
-        '''
-        Latency benchmark for address generation modes.
-        
-        Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
-        or 'i' (immediate) and initial_value a string.
-        E.g., ('r', 'i64', '0') or ('i', None, '4')
 
-        +--------------------------------+-----------------------------+
-        | Mode                           | AT&T                        |
-        +--------------------------------+-----------------------------+
-        | Offset                         | leal           0x0100, %eax | <- no latency support
-        | Base                           | leal           (%esi), %eax |
-        | Offset + Base                  | leal         -8(%ebp), %eax |
-        | Offset + Index*Width           | leal   0x100(,%ebx,4), %eax |
-        | Offset + Base + Index*Width    | leal 0x8(%edx,%ebx,4), %eax |
-        +--------------------------------+-----------------------------+
-        OFFSET(BASE, INDEX, WIDTH) -> offset + base + index*width
-        offset: immediate integer (+/-)
-        base: register
-        index: register
-        width: immediate 1,2,4 or 8
-        '''
-        super(AddressGenerationLatencytTest, self).__init__(
-            offset=offset,
-            base=base,
-            index=index,
-            width=width,
-            destination=destination,
-            parallelism=1)
-
-
-class LoadThroughputTest(InstructionTest):
+class LoadBenchmark(Benchmark):
     def __init__(self, chain_length=2048, repeat=100000, structure='linear', parallelism=6):
         '''
-        Throughput benchmark for L1 load using pointer chasing.
+        Benchmark for L1 load using pointer chasing.
         
         *chain_length* is the number of pointers to place in memory.
         *repeat* is the number of iterations the chain run through.
         *structure* may be 'linear' (1-offsets) or 'random'.
         '''
-        super(LoadThroughputTest, self).__init__()
-        self.loop_init = ''
-        self.loop_body = ''
-        self.loop_tail = ''
+        Benchmark.__init__(self)
+        self._loop_init = ''
+        self._loop_body = ''
+        self._loop_tail = ''
         element_type = ctypes.POINTER(ctypes.c_int)
-        self.function_ctype = ctypes.CFUNCTYPE(
+        self._function_ctype = ctypes.CFUNCTYPE(
             ctypes.c_int, ctypes.POINTER(element_type), ctypes.c_int)
         self.chain_length = chain_length
         self.repeat = repeat
-        self.iterations = chain_length*repeat
+        self._iterations = chain_length*repeat
         self.parallelism = parallelism
-        self.pointer_field = (element_type * chain_length)()
+        self.structure = structure
+        self._pointer_field = (element_type * chain_length)()
 
         # Initialize pointer field
         # Field must represent a ring of pointers
         if structure == 'linear':
             for i in range(chain_length):
-                self.pointer_field[i] = ctypes.cast(
-                    ctypes.pointer(self.pointer_field[(i+1)%chain_length]), element_type)
+                self._pointer_field[i] = ctypes.cast(
+                    ctypes.pointer(self._pointer_field[(i+1)%chain_length]), element_type)
         elif structure == 'random':
             shuffled_indices = list(range(chain_length))
             random.shuffle(shuffled_indices)
             for i in range(chain_length):
-                self.pointer_field[shuffled_indices[i]] = ctypes.cast(
-                    ctypes.pointer(self.pointer_field[shuffled_indices[(i+1)%chain_length]]),
+                self._pointer_field[shuffled_indices[i]] = ctypes.cast(
+                    ctypes.pointer(self._pointer_field[shuffled_indices[(i+1)%chain_length]]),
                     element_type)
         else:
             raise ValueError("Given structure is not supported. Supported are: "
                              "linear and random.")
     
     def prepare_arguments(self):
-        return (self.pointer_field, self.repeat)
+        return (self._pointer_field, self.repeat)
     
     def get_ir(self):
         '''
@@ -513,98 +477,180 @@ class LoadThroughputTest(InstructionTest):
         return ret
 
 
-class LoadLatencyTest(LoadThroughputTest):
-    def __init__(self, chain_length=1024, repeat=100, structure='linear'):
-        '''
-        Latency benchmark for L1 load using pointer chasing.
-        
-        *chain_length* is the number of pointers to place in memory.
-        *repeat* is the number of iterations the chain run through.
-        *structure* may be 'linear' (1-offsets) or 'random'.
-        '''
-        super(LoadLatencyTest, self).__init__(
-            chain_length=chain_length, repeat=repeat, structure=structure, parallelism=1)
-
-
 if __name__ == '__main__':
     llvm.initialize()
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
     llvm.initialize_native_asmparser()
     
-    modules = []
+    modules = collections.OrderedDict()
     
-    # Construct with home grown IR builder
-    modules.append(InstructionTest())
     # immediate source
-    modules.append(ArithmeticLatencytTest(
+    modules['add i64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),)))
+        src_operands=(('i','i64', '1'),),
+        parallelism=1)
 
     # register source
-    modules.append(ArithmeticLatencytTest(
+    modules['add r64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('r','i64', '1'),)))
+        src_operands=(('r','i64', '1'),),
+        parallelism=1)
     
     # multiple instructions
-    modules.append(ArithmeticLatencytTest(
+    modules['4xadd i64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),)))
+        src_operands=(('i','i64', '1'),),
+        parallelism=1)
     
-    modules.append(AddressGenerationLatencytTest())
+    # immediate source
+    modules['add i64 r64 TP'] = InstructionBenchmark(
+        instruction='addq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('i','i64', '1'),),
+        parallelism=10)
+
+    # register source
+    modules['add r64 r64 TP'] = InstructionBenchmark(
+        instruction='addq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('r','i64', '1'),),
+        parallelism=10)
     
-    modules.append(AddressGenerationLatencytTest(
+    # multiple instructions
+    modules['4xadd i64 r64 TP'] = InstructionBenchmark(
+        instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
+        dst_operands=(),
+        dstsrc_operands=(('r','i64', '0'),),
+        src_operands=(('i','i64', '1'),),
+        parallelism=10)
+    
+    modules['lea base LAT'] = AddressGenerationBenchmark(
         offset=None,
         base=('r', 'i64', '666'),
         index=None,
         width=None,
-        destination='base'))
+        destination='base',
+        parallelism=1)
     
-    modules.append(AddressGenerationLatencytTest(
+    modules['lea index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
         base=None,
         index=('r', 'i64', '1'),
         width=('i', None, '4'),
-        destination='index'))
+        destination='index',
+        parallelism=1)
     
-    modules.append(AddressGenerationLatencytTest(
+    modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
         base=None,
         index=('r', 'i64', '51'),
         width=('i', None, '4'),
-        destination='index'))
+        destination='index',
+        parallelism=1)
     
-    modules.append(AddressGenerationLatencytTest(
+    modules['lea base+index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
         base=('r', 'i64', '23'),
         index=('r', 'i64', '12'),
         width=('i', None, '4'),
-        destination='base'))
+        destination='base',
+        parallelism=1)
     
-    modules.append(LoadLatencyTest(
+    modules['lea base+offset+index*width LAT'] = AddressGenerationBenchmark(
+        offset=('i', None, '42'),
+        base=('r', 'i64', '23'),
+        index=('r', 'i64', '12'),
+        width=('i', None, '4'),
+        destination='base',
+        parallelism=1)
+    
+    modules['lea base LAT'] = AddressGenerationBenchmark(
+        offset=None,
+        base=('r', 'i64', '666'),
+        index=None,
+        width=None,
+        destination='base',
+        parallelism=10)
+    
+    modules['lea index*width LAT'] = AddressGenerationBenchmark(
+        offset=None,
+        base=None,
+        index=('r', 'i64', '1'),
+        width=('i', None, '4'),
+        destination='index',
+        parallelism=10)
+    
+    modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
+        offset=('i', 'i64', '-0x8'),
+        base=None,
+        index=('r', 'i64', '51'),
+        width=('i', None, '4'),
+        destination='index',
+        parallelism=10)
+    
+    modules['lea base+index*width LAT'] = AddressGenerationBenchmark(
+        offset=None,
+        base=('r', 'i64', '23'),
+        index=('r', 'i64', '12'),
+        width=('i', None, '4'),
+        destination='base',
+        parallelism=10)
+    
+    modules['lea base+offset+index*width LAT'] = AddressGenerationBenchmark(
+        offset=('i', None, '42'),
+        base=('r', 'i64', '23'),
+        index=('r', 'i64', '12'),
+        width=('i', None, '4'),
+        destination='base',
+        parallelism=10)
+    
+    modules['LD linear LAT'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         repeat=100000,
-        structure='linear'))
-    modules.append(LoadLatencyTest(
+        structure='linear',
+        parallelism=1)
+        
+    modules['LD random LAT'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         repeat=100000,
-        structure='random'))
+        structure='random',
+        parallelism=1)
+                
+    modules['LD linear TP'] = LoadBenchmark(
+        chain_length=2048,  # 2048 * 8B = 16kB
+        repeat=100000,
+        structure='linear',
+        parallelism=10)
+        
+    modules['LD random TP'] = LoadBenchmark(
+        chain_length=2048,  # 2048 * 8B = 16kB
+        repeat=100000,
+        structure='random',
+        parallelism=10)
     
-    modules.append(ArithmeticThroughputTest())
-    
-    modules.append(AddressGenerationThroughputTest())
-    
-    modules.append(LoadThroughputTest())
-    
-    
-    for module in modules:
-        print("=== LLVM")
-        print(module.get_ir())
-        module.build_and_execute()
+    verbose = 0
+    for key, module in modules.items():
+        if verbose > 0:
+            print("=== LLVM")
+            print(module.get_ir())
+        r = module.build_and_execute(print_assembly=verbose > 0)
+        
+        if module.parallelism > 1:
+            cy_per_it = min(r['runtimes'])/r['iterations']*r['frequency']/module.parallelism
+        else:
+            cy_per_it = min(r['runtimes'])/r['iterations']*r['frequency']
+        print('{key:<32} {cy_per_it:.2f} cy/It with {runtime_sum:.4f}s'.format(
+            key=key,
+            module=module,
+            cy_per_it=cy_per_it,
+            runtime_sum=sum(r['runtimes'])))
     
