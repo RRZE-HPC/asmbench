@@ -50,7 +50,7 @@ class InstructionTest:
         self.ret_llvmtype = 'i64'
         self.ret_ctype = self.LLVM2CTYPE[self.ret_llvmtype]
         self.function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
-        self.N = 100000000
+        self.iterations = 100000000
         
         # Do interesting work
         self.loop_body = textwrap.dedent('''\
@@ -93,7 +93,7 @@ class InstructionTest:
     
     def prepare_arguments(self):
         '''Build argument tuple, to be passed to low level function.'''
-        return (self.N,)
+        return (self.iterations,)
     
     def build_and_execute(self, print_assembly=True):
         llvm_module = llvm.parse_assembly(self.get_ir())
@@ -126,22 +126,24 @@ class InstructionTest:
                 benchtime = end-start
                 cur_freq = psutil.cpu_freq().current*1e6
                 print('The result ({}) in {:.6f} cy / it, {:.6f}s'.format(
-                    res, benchtime/self.N*cur_freq, benchtime))
+                    res, benchtime/self.iterations*cur_freq, benchtime))
 
 
-class ArithmeticLatencytTest(InstructionTest):
+class ArithmeticThroughputTest(InstructionTest):
     def __init__(self, instruction='addq $1, $0',
                  dst_operands=(),
                  dstsrc_operands=(('r','i64', '0'),),
-                 src_operands=(('i','i64', '1'),)):
+                 src_operands=(('i','i64', '1'),),
+                 parallelism=10):
         '''
-        Build LLVM IR for arithmetic instruction latency benchmark without memory references.
+        Build LLVM IR for arithmetic instruction throughput benchmark without memory references.
                  
         Currently only one destination (dst) or combined destination and source (dstsrc) operand
-        is allowed. Only 
-        instruction's operands ($N) refer to the order of opernads found in dst + dstsrc + src.
+        is allowed. Only instruction's operands ($N) refer to the order of opernads found in
+        dst + dstsrc + src.
         '''
         InstructionTest.__init__(self)
+        self.parallelism = parallelism
         self.loop_init = ''
         self.loop_body = ''
         if len(dst_operands) + len(dstsrc_operands) != 1:
@@ -157,10 +159,11 @@ class ArithmeticLatencytTest(InstructionTest):
             # constraint code, llvm type string, initial value
             if dstsrc_op[0] == 'r':
                 # register operand
-                self.loop_body += (
-                    '%"dstsrc{index}" = '
-                    'phi {type} [{initial}, %"entry"], [%"dstsrc{index}.out", %"loop"]\n').format(
-                        index=i, type=dstsrc_op[1], initial=dstsrc_op[2])
+                for p in range(self.parallelism):
+                    self.loop_body += (
+                        '%"dstsrc{index}_{p}" = phi {type} '
+                        '[{initial}, %"entry"], [%"dstsrc{index}_{p}.out", %"loop"]\n').format(
+                            index=i, type=dstsrc_op[1], initial=dstsrc_op[2], p=p)
             else:
                 raise NotImplemented("Operand type in {!r} is not yet supported.".format(dstsrc_op))
         
@@ -180,18 +183,21 @@ class ArithmeticLatencytTest(InstructionTest):
                 ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
                 [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
             
-            operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
-            for i, dop in enumerate(dstsrc_operands):
-                operands.append('{type} %dstsrc{index}'.format(type=dop[1], index=i))
-            args = ', '.join(operands)
-            self.loop_body += ('%"dstsrc{index}.out" = call {dst_type} asm sideeffect'
-                               ' "{instruction}", "{constraints}" ({args})\n').format(
-                index=i,
-                dst_type=dstsrc_op[1],
-                instruction=instruction,
-                constraints=constraints,
-                args=args
-            )
+            for p in range(self.parallelism):
+                operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
+                for i, dop in enumerate(dstsrc_operands):
+                    operands.append('{type} %dstsrc{index}_{p}'.format(type=dop[1], index=i, p=p))
+                args = ', '.join(operands)
+                
+                self.loop_body += (
+                    '%"dstsrc{index}_{p}.out" = call {dst_type} asm sideeffect'
+                    ' "{instruction}", "{constraints}" ({args})\n').format(
+                        index=i,
+                        dst_type=dstsrc_op[1],
+                        instruction=instruction,
+                        constraints=constraints,
+                        args=args,
+                        p=p)
             
         for i, dst_op in enumerate(dst_operands):
             # FIXME support dst operands
@@ -200,19 +206,40 @@ class ArithmeticLatencytTest(InstructionTest):
         
         # Set %"ret" to something, needs to be a constant or phi function
         self.loop_tail = textwrap.dedent('''\
-            %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0.out", %"loop"]\
+            %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0_0.out", %"loop"]\
             '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
 
 
-class AddressGenerationLatencytTest(InstructionTest):
+class ArithmeticLatencytTest(ArithmeticThroughputTest):
+    def __init__(self, instruction='addq $1, $0',
+                 dst_operands=(),
+                 dstsrc_operands=(('r','i64', '0'),),
+                 src_operands=(('i','i64', '1'),)):
+        '''
+        Build LLVM IR for arithmetic instruction latency benchmark without memory references.
+                 
+        Currently only one destination (dst) or combined destination and source (dstsrc) operand
+        is allowed. Only instruction's operands ($N) refer to the order of opernads found in
+        dst + dstsrc + src.
+        '''
+        super(ArithmeticLatencytTest, self).__init__(
+            instruction=instruction,
+            dst_operands=dst_operands,
+            dstsrc_operands=dstsrc_operands,
+            src_operands=src_operands,
+            parallelism=1)
+
+
+class AddressGenerationThroughputTest(InstructionTest):
     def __init__(self,
                  offset=('i', 'i64', '0x42'),
                  base=('r', 'i64', '0'),
                  index=('r', 'i64', '0'),
                  width=('i', None, '4'),
-                 destination='base'):
+                 destination='base',
+                 parallelism=10):
         '''
-        Test for address generation modes.
+        Throughput benchmark for address generation modes.
         
         Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
         or 'i' (immediate) and initial_value a string.
@@ -290,50 +317,91 @@ class AddressGenerationLatencytTest(InstructionTest):
             destination_reg = index
         
         # Part 1: PHI function for destination
-        self.loop_body += (
-            '%"{name}" = '
-            'phi {type} [{initial}, %"entry"], [%"{name}.out", %"loop"]\n').format(
-                name=destination, type=destination_reg[1], initial=destination_reg[2])
+        for p in range(parallelism):
+            self.loop_body += (
+                '%"{name}_{p}" = '
+                'phi {type} [{initial}, %"entry"], [%"{name}_{p}.out", %"loop"]\n').format(
+                    name=destination, type=destination_reg[1], initial=destination_reg[2], p=p)
         
-        constraints = '=r,r'
-        if base and index:
-            constraints += ',r'
-            if destination == 'index':
-                args = '{base_type} %"{base_name}", {index_type} {index_value}'.format(
-                    base_type=base[1], base_name=destination,
-                    index_type=index[1], index_value=index[2])
-            else:  # destination == 'index':
-                args ='{base_type} {base_value}, {index_type} %"{index_name}"'.format(
-                    base_type=base[1], base_value=base[2],
-                    index_type=index[1], index_name=destination)
-        else:
-            args = '{type} %"{name}"'.format(type=destination_reg[1], name=destination)
-        
-        self.loop_body += ('%"{name}.out" = call {type} asm sideeffect'
-                           ' "lea {ops}", "{constraints}" ({args})\n').format(
-            name=destination,
-            type=destination_reg[1],
-            ops=ops,
-            constraints=constraints,
-            args=args
-        )
+
+        for p in range(parallelism):
+            constraints = '=r,r'
+            if base and index:
+                constraints += ',r'
+                if destination == 'index':
+                    args = '{base_type} %"{base_name}_{p}", {index_type} {index_value}'.format(
+                        base_type=base[1], base_name=destination,
+                        index_type=index[1], index_value=index[2], p=p)
+                else:  # destination == 'index':
+                    args ='{base_type} {base_value}, {index_type} %"{index_name}_{p}"'.format(
+                        base_type=base[1], base_value=base[2],
+                        index_type=index[1], index_name=destination, p=p)
+            else:
+                args = '{type} %"{name}_{p}"'.format(type=destination_reg[1], name=destination, p=p)
+            
+            self.loop_body += (
+                '%"{name}_{p}.out" = call {type} asm sideeffect'
+                ' "lea {ops}", "{constraints}" ({args})\n').format(
+                    name=destination,
+                    type=destination_reg[1],
+                    ops=ops,
+                    constraints=constraints,
+                    args=args,
+                    p=p)
 
         # Set %"ret" to something, needs to be a constant or phi function
         self.loop_tail = textwrap.dedent('''\
-            %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}.out", %"loop"]\
+            %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}_0.out", %"loop"]\
             '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1]))
 
-
-class LoadLatencyTest(InstructionTest):
-    def __init__(self, chain_length=1024, repeat=100, structure='ring'):
+class AddressGenerationLatencytTest(AddressGenerationThroughputTest):
+    def __init__(self,
+                 offset=('i', 'i64', '0x42'),
+                 base=('r', 'i64', '0'),
+                 index=('r', 'i64', '0'),
+                 width=('i', None, '4'),
+                 destination='base'):
         '''
-        Build LLVM IR benchmark to test L1 load latency using pointer chasing.
+        Latency benchmark for address generation modes.
+        
+        Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
+        or 'i' (immediate) and initial_value a string.
+        E.g., ('r', 'i64', '0') or ('i', None, '4')
+
+        +--------------------------------+-----------------------------+
+        | Mode                           | AT&T                        |
+        +--------------------------------+-----------------------------+
+        | Offset                         | leal           0x0100, %eax | <- no latency support
+        | Base                           | leal           (%esi), %eax |
+        | Offset + Base                  | leal         -8(%ebp), %eax |
+        | Offset + Index*Width           | leal   0x100(,%ebx,4), %eax |
+        | Offset + Base + Index*Width    | leal 0x8(%edx,%ebx,4), %eax |
+        +--------------------------------+-----------------------------+
+        OFFSET(BASE, INDEX, WIDTH) -> offset + base + index*width
+        offset: immediate integer (+/-)
+        base: register
+        index: register
+        width: immediate 1,2,4 or 8
+        '''
+        super(AddressGenerationLatencytTest, self).__init__(
+            offset=offset,
+            base=base,
+            index=index,
+            width=width,
+            destination=destination,
+            parallelism=1)
+
+
+class LoadThroughputTest(InstructionTest):
+    def __init__(self, chain_length=2048, repeat=100000, structure='linear', parallelism=6):
+        '''
+        Throughput benchmark for L1 load using pointer chasing.
         
         *chain_length* is the number of pointers to place in memory.
         *repeat* is the number of iterations the chain run through.
         *structure* may be 'linear' (1-offsets) or 'random'.
         '''
-        InstructionTest.__init__(self)
+        super(LoadThroughputTest, self).__init__()
         self.loop_init = ''
         self.loop_body = ''
         self.loop_tail = ''
@@ -342,7 +410,8 @@ class LoadLatencyTest(InstructionTest):
             ctypes.c_int, ctypes.POINTER(element_type), ctypes.c_int)
         self.chain_length = chain_length
         self.repeat = repeat
-        self.N = chain_length*repeat
+        self.iterations = chain_length*repeat
+        self.parallelism = parallelism
         self.pointer_field = (element_type * chain_length)()
 
         # Initialize pointer field
@@ -367,7 +436,7 @@ class LoadLatencyTest(InstructionTest):
     
     def get_ir(self):
         '''
-        Return LLVM IR equivalent of:
+        Return LLVM IR equivalent of (in case of parallelism == 1):
         
         int test(int** ptrf, int repeat) {
             int** p0 = (int**)ptrf[0];
@@ -382,32 +451,80 @@ class LoadLatencyTest(InstructionTest):
             return i;
         }
         '''
-        return textwrap.dedent('''
-        define i32 @test(i32**, i32) {
-          %3 = bitcast i32** %0 to i32***
-          %4 = load i32**, i32*** %3, align 8
-          %5 = icmp sgt i32 %1, 0
-          br i1 %5, label %6, label %17
-        
-          br label %7
-        
-          %8 = phi i32 [ %15, %14 ], [ 0, %6 ]
-          br label %9
-        
-          %10 = phi i32** [ %4, %7 ], [ %12, %9 ]
-          %11 = bitcast i32** %10 to i32***
-          %12 = load i32**, i32*** %11, align 8
-          %13 = icmp eq i32** %12, %4
-          br i1 %13, label %14, label %9
-        
-          %15 = add i32 %8, 1
-          %16 = icmp eq i32 %15, %1
-          br i1 %16, label %17, label %7
-        
-          %18 = phi i32 [ 0, %2 ], [ %1, %14 ]
-          ret i32 %18
-        }
+        ret = textwrap.dedent('''
+        define i32 @test(i32** %"ptrf_0", i32 %"repeats") {
+        entry:
         ''')
+        # Load pointer to ptrf[p] and p0
+        for p in range(self.parallelism):
+            if p > 0:
+                ret += '  %"ptrf_{p}" = getelementptr i32*, i32** %"ptrf_0", i64 {p}\n'.format(p=p)
+            ret += (
+                '  %"pp0_{p}" = bitcast i32** %"ptrf_{p}" to i32***\n'
+                '  %"p0_{p}" = load i32**, i32*** %"pp0_{p}", align 8\n').format(p=p)
+        
+        ret += textwrap.dedent('''
+            %"cmp.entry" = icmp sgt i32 %"repeats", 0
+            br i1 %"cmp.entry", label %"loop0", label %"end"
+
+        loop0:
+            br label %"loop1"
+
+        loop1:
+            %"i" = phi i32 [ %"i.1", %"loop3" ], [ 0, %"loop0" ]
+            br label %"loop2"
+
+        loop2:\n''')
+        
+        for p in range(self.parallelism):
+            ret += ('  %"p_{p}" = phi i32** '
+                    '[ %"p0_{p}", %"loop1" ], [ %"p_{p}.1", %"loop2" ]\n').format(p=p)
+        
+        # load p, compare to p0 and or-combine results
+        for p in range(self.parallelism):
+            ret += ('  %"pp_{p}" = bitcast i32** %"p_{p}" to i32***\n'
+                    '  %"p_{p}.1" = load i32**, i32*** %"pp_{p}", align 8\n'
+                    '  %"cmp_{p}.loop2" = icmp eq i32** %"p_{p}.1", %"p0_{p}"\n').format(p=p)
+            if p == 1:
+                ret += ('  %"cmp__{p}.loop2" = '
+                        'or i1 %"cmp_{p_before}.loop2", %"cmp_{p}.loop2"\n').format(
+                        p=p, p_before=p-1)
+            elif p > 1:
+                ret += ('  %"cmp__{p}.loop2" = '
+                        'or i1 %"cmp__{p_before}.loop2", %"cmp_{p}.loop2"\n').format(
+                        p=p, p_before=p-1)
+        
+        if self.parallelism == 1:
+            ret += '  br i1 %"cmp_0.loop2", label %"loop3", label %"loop2"\n'
+        else:
+            ret += '  br i1 %"cmp__{p_last}.loop2", label %"loop3", label %"loop2"\n'.format(
+                p_last=self.parallelism-1)
+        
+        ret += textwrap.dedent('''
+        loop3:
+            %"i.1" = add i32 %"i", 1
+            %"cmp.loop3" = icmp eq i32 %"i.1", %"repeats"
+            br i1 %"cmp.loop3", label %"end", label %"loop1"
+
+        end:
+            %"ret" = phi i32 [ 0, %"entry" ], [ %"repeats", %"loop3" ]
+            ret i32 %"ret"
+        }''')
+        return ret
+
+
+class LoadLatencyTest(LoadThroughputTest):
+    def __init__(self, chain_length=1024, repeat=100, structure='linear'):
+        '''
+        Latency benchmark for L1 load using pointer chasing.
+        
+        *chain_length* is the number of pointers to place in memory.
+        *repeat* is the number of iterations the chain run through.
+        *structure* may be 'linear' (1-offsets) or 'random'.
+        '''
+        super(LoadLatencyTest, self).__init__(
+            chain_length=chain_length, repeat=repeat, structure=structure, parallelism=1)
+
 
 if __name__ == '__main__':
     llvm.initialize()
@@ -470,15 +587,21 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base'))
     
-    modules = []
     modules.append(LoadLatencyTest(
-        chain_length=2048,
+        chain_length=2048,  # 2048 * 8B = 16kB
         repeat=100000,
         structure='linear'))
     modules.append(LoadLatencyTest(
-        chain_length=2048,
+        chain_length=2048,  # 2048 * 8B = 16kB
         repeat=100000,
         structure='random'))
+    
+    modules.append(ArithmeticThroughputTest())
+    
+    modules.append(AddressGenerationThroughputTest())
+    
+    modules.append(LoadThroughputTest())
+    
     
     for module in modules:
         print("=== LLVM")
