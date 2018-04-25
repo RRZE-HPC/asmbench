@@ -573,7 +573,7 @@ if __name__ == '__main__':
         destination='base',
         parallelism=1)
     
-    modules['lea base LAT'] = AddressGenerationBenchmark(
+    modules['lea base TP'] = AddressGenerationBenchmark(
         offset=None,
         base=('r', 'i64', '666'),
         index=None,
@@ -581,7 +581,7 @@ if __name__ == '__main__':
         destination='base',
         parallelism=10)
     
-    modules['lea index*width LAT'] = AddressGenerationBenchmark(
+    modules['lea index*width TP'] = AddressGenerationBenchmark(
         offset=None,
         base=None,
         index=('r', 'i64', '1'),
@@ -589,7 +589,7 @@ if __name__ == '__main__':
         destination='index',
         parallelism=10)
     
-    modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
+    modules['lea offset+index*width TP'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
         base=None,
         index=('r', 'i64', '51'),
@@ -597,7 +597,7 @@ if __name__ == '__main__':
         destination='index',
         parallelism=10)
     
-    modules['lea base+index*width LAT'] = AddressGenerationBenchmark(
+    modules['lea base+index*width TP'] = AddressGenerationBenchmark(
         offset=None,
         base=('r', 'i64', '23'),
         index=('r', 'i64', '12'),
@@ -605,7 +605,7 @@ if __name__ == '__main__':
         destination='base',
         parallelism=10)
     
-    modules['lea base+offset+index*width LAT'] = AddressGenerationBenchmark(
+    modules['lea base+offset+index*width TP'] = AddressGenerationBenchmark(
         offset=('i', None, '42'),
         base=('r', 'i64', '23'),
         index=('r', 'i64', '12'),
