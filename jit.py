@@ -102,19 +102,31 @@ class Benchmark:
         '''Build argument tuple, to be passed to low level function.'''
         return (self._iterations,)
     
-    def build_and_execute(self, repeat=10, print_assembly=True):
-        llvm_module = llvm.parse_assembly(self.get_ir())
-        llvm_module.verify()
+    def get_llvm_module(self):
+        '''Build and return LLVM module from LLVM IR code.'''
+        if not hasattr(self, '_llvm_module'):
+            self._llvm_module = llvm.parse_assembly(self.get_ir())
+            self._llvm_module.verify()
+        return self._llvm_module
     
-        # Compile the module to machine code using MCJIT
-        tm = llvm.Target.from_default_triple().create_target_machine()
+    def get_target_machine(self):
+        '''Instantiate and return target machine.'''
+        if not hasattr(self, '_llvm_module'):
+            self._tm = llvm.Target.from_default_triple().create_target_machine()
+        return self._tm
+    
+    def get_assembly(self):
+        '''Compile and return assembly from LLVM module.'''
+        tm = self.get_target_machine()
         tm.set_asm_verbosity(0)
+        return tm.emit_assembly(self.get_llvm_module())
+    
+    def build_and_execute(self, repeat=10):
+        # Compile the module to machine code using MCJIT
+        tm = self.get_target_machine()
         runtimes = []
-        with llvm.create_mcjit_compiler(llvm_module, tm) as ee:
+        with llvm.create_mcjit_compiler(self.get_llvm_module(), tm) as ee:
             ee.finalize_object()
-            if print_assembly:
-                print('=== Assembly')
-                print(tm.emit_assembly(llvm_module))
         
             # Obtain a pointer to the compiled 'sum' - it's the address of its JITed
             # code in memory.
@@ -642,7 +654,9 @@ if __name__ == '__main__':
         if verbose > 0:
             print("=== LLVM")
             print(module.get_ir())
-        r = module.build_and_execute(print_assembly=verbose > 0)
+            print("=== Assembly")
+            print(module.get_assembly())
+        r = module.build_and_execute()
         
         if module.parallelism > 1:
             cy_per_it = min(r['runtimes'])/r['iterations']*r['frequency']/module.parallelism
