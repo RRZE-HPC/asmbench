@@ -196,22 +196,16 @@ class InstructionBenchmark(Benchmark):
             else:
                 raise NotImplemented("Operand type in {!r} is not yet supported.".format(dstsrc_op))
         
-        for i, dst_op in enumerate(itertools.chain(dst_operands)):
-            # No phi functions necessary
-            # TODO build phi function to switch between source and destination from one iteration 
-            # to next
-            raise NotImplemented("Destination operand is not yet implemented")
-        
         # Part 2: Inline ASM call
-        for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
+        # Build constraint string from operands
+        constraints = ','.join(
+            ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
+            [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
+
+        for i, dstsrc_op in enumerate(dstsrc_operands):
             # Build instruction from instruction and operands
             # TODO support multiple dstsrc operands
             # TODO support dst and dstsrc operands at the same time
-            # Build constraint string from operands
-            constraints = ','.join(
-                ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
-                [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
-            
             for p in range(self.parallelism):
                 operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
                 for i, dop in enumerate(dstsrc_operands):
@@ -227,16 +221,35 @@ class InstructionBenchmark(Benchmark):
                         constraints=constraints,
                         args=args,
                         p=p)
-            
+
         for i, dst_op in enumerate(dst_operands):
-            # FIXME support dst operands
+            # Build instruction from instruction and operands
+            # TODO support multiple dst operands
             # TODO support dst and dstsrc operands at the same time
-            raise NotImplemented("Destination operand is not yet implemented")
+            for p in range(self.parallelism):
+                operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
+                args = ', '.join(operands)
+                
+                self._loop_body += (
+                    '%"dst{index}_{p}.out" = call {dst_type} asm sideeffect'
+                    ' "{instruction}", "{constraints}" ({args})\n').format(
+                        index=i,
+                        dst_type=dst_op[1],
+                        instruction=instruction,
+                        constraints=constraints,
+                        args=args,
+                        p=p)
         
         # Set %"ret" to something, needs to be a constant or phi function
-        self._loop_tail = textwrap.dedent('''\
-            %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0_0.out", %"loop"]\
-            '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
+        if dstsrc_operands:
+            self._loop_tail = textwrap.dedent('''\
+                %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0_0.out", %"loop"]\
+                '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
+        else:
+
+            self._loop_tail = textwrap.dedent('''\
+                %"ret" = phi {type} [{}, %"entry"], [%"dst0_0.out", %"loop"]\
+                '''.format(dst_operands[0][2], type=dst_operands[0][1]))
 
 
 class AddressGenerationBenchmark(Benchmark):
@@ -662,12 +675,21 @@ if __name__ == '__main__':
         dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
         src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
         parallelism=1)
-    
-    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
+
+    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) LAT'] = InstructionBenchmark(
         instruction='vmulpd $1, $0, $0',
         dst_operands=(),
         dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
         src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        parallelism=1)
+
+    # This is actually a TP benchmark with parallelism=1, because there are no inter-loop depencies:
+    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dst) TP'] = InstructionBenchmark(
+        instruction='vmulpd $1, $2, $0',
+        dst_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        dstsrc_operands=(),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
+                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
         parallelism=1)
     
     verbose = 0
