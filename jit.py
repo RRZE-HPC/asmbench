@@ -37,14 +37,14 @@ class Benchmark:
         'i16': ctypes.c_int16,
         'i32': ctypes.c_int32,
         'i64': ctypes.c_int64,
-        'f32': ctypes.c_float,
-        'f64': ctypes.c_double,
+        'float': ctypes.c_float,
+        'double': ctypes.c_double,
         'i8*': ctypes.POINTER(ctypes.c_int8),
         'i16*': ctypes.POINTER(ctypes.c_int16),
         'i32*': ctypes.POINTER(ctypes.c_int32),
         'i64*': ctypes.POINTER(ctypes.c_int64),
-        'f32*': ctypes.POINTER(ctypes.c_float),
-        'f64*': ctypes.POINTER(ctypes.c_double),
+        'float*': ctypes.POINTER(ctypes.c_float),
+        'double*': ctypes.POINTER(ctypes.c_double),
     }
     def __init__(self):
         self._loop_init = ''
@@ -82,7 +82,7 @@ class Benchmark:
               br i1 %"loop_cond", label %"loop", label %"end"
 
             loop:
-              %"loop_counter" = phi {ret_type} [0, %"entry"], [%"loop_counter.1", %"loop"]
+              %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
             {loop_body}
               %"loop_counter.1" = add i64 %"loop_counter", 1
               %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
@@ -112,7 +112,10 @@ class Benchmark:
     def get_target_machine(self):
         '''Instantiate and return target machine.'''
         if not hasattr(self, '_llvm_module'):
-            self._tm = llvm.Target.from_default_triple().create_target_machine()
+            features=llvm.get_host_cpu_features().flatten()
+            cpu=llvm.get_host_cpu_name()
+            self._tm = llvm.Target.from_default_triple().create_target_machine(
+                cpu=cpu, features=features)
         return self._tm
     
     def get_assembly(self):
@@ -174,7 +177,7 @@ class InstructionBenchmark(Benchmark):
         self._loop_body = ''
         if len(dst_operands) + len(dstsrc_operands) != 1:
             raise NotImplemented("Must have exactly one dst or dstsrc operand.")
-        if not all([op[0] in 'ir'
+        if not all([op[0] in 'irx'
                     for op in itertools.chain(dst_operands, dstsrc_operands, src_operands)]):
             raise NotImplemented("This class only supports register and immediate operands.")
 
@@ -183,7 +186,7 @@ class InstructionBenchmark(Benchmark):
         # Part 1: PHI functions and initializations
         for i, dstsrc_op in enumerate(itertools.chain(dstsrc_operands)):
             # constraint code, llvm type string, initial value
-            if dstsrc_op[0] == 'r':
+            if dstsrc_op[0] in 'rx':
                 # register operand
                 for p in range(self.parallelism):
                     self._loop_body += (
@@ -521,6 +524,9 @@ if __name__ == '__main__':
         src_operands=(('i','i64', '1'),),
         parallelism=1)
     
+    # vector add
+    # TODO
+    
     # immediate source
     modules['add i64 r64 TP'] = InstructionBenchmark(
         instruction='addq $1, $0',
@@ -648,8 +654,16 @@ if __name__ == '__main__':
         repeat=100000,
         structure='random',
         parallelism=10)
+        
+    modules = {}
+    modules['vaddpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
+        instruction='vaddpd $1, $0, $0',
+        dst_operands=(),
+        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        parallelism=1)
     
-    verbose = 0
+    verbose = 1
     for key, module in modules.items():
         if verbose > 0:
             print("=== LLVM")
