@@ -663,7 +663,14 @@ if __name__ == '__main__':
         src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
         parallelism=1)
     
-    verbose = 1
+    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
+        instruction='vmulpd $1, $0, $0',
+        dst_operands=(),
+        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        parallelism=1)
+    
+    verbose = 0
     for key, module in modules.items():
         if verbose > 0:
             print("=== LLVM")
