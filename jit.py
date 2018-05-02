@@ -45,12 +45,12 @@ class Benchmark:
         'float*': ctypes.POINTER(ctypes.c_float),
         'double*': ctypes.POINTER(ctypes.c_double),
     }
-    def __init__(self):
+    def __init__(self, iterations=100000000):
         self._loop_init = ''
         self._ret_llvmtype = 'i64'
         self._ret_ctype = self.LLVM2CTYPE[self._ret_llvmtype]
         self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
-        self._iterations = 100000000
+        self.iterations = iterations
 
         # Do interesting work
         self._loop_body = textwrap.dedent('''\
@@ -72,6 +72,31 @@ class Benchmark:
                        if not k.startswith('_')]))
 
     def get_ir(self):
+        return textwrap.dedent('''\
+            define {ret_type} @"test"(i64 %"N")
+            {{
+            entry:
+              %"N.fp" = sitofp i64 %"N" to double
+              %"loop_cond" = fcmp olt double 0.0, %"N.fp"
+            {loop_init}
+              br i1 %"loop_cond", label %"loop", label %"end"
+
+            loop:
+              %"loop_counter" = phi double [0.0, %"entry"], [%"loop_counter.1", %"loop"]
+            {loop_body}
+              %"loop_counter.1" = fadd double %"loop_counter", 1.0
+              %"loop_cond.1" = fcmp olt double %"loop_counter.1", %"N.fp"
+              br i1 %"loop_cond.1", label %"loop", label %"end"
+
+            end:
+            {loop_tail}
+              ret {ret_type} %"ret"
+            }}
+            ''').format(
+                ret_type=self._ret_llvmtype,
+                loop_init=textwrap.indent(self._loop_init, '  '),
+                loop_body=textwrap.indent(self._loop_body, '  '),
+                loop_tail=textwrap.indent(self._loop_tail, '  '))
         return textwrap.dedent('''\
             define {ret_type} @"test"(i64 %"N")
             {{
@@ -99,7 +124,7 @@ class Benchmark:
 
     def prepare_arguments(self):
         '''Build argument tuple, to be passed to low level function.'''
-        return (self._iterations,)
+        return (self.iterations,)
 
     def get_llvm_module(self):
         '''Build and return LLVM module from LLVM IR code.'''
@@ -148,9 +173,10 @@ class Benchmark:
                 end = time.perf_counter()
                 runtimes.append(end-start)
 
-        return {'iterations': self._iterations,
+        return {'iterations': self.iterations,
                 'runtimes': runtimes,
                 'frequency': psutil.cpu_freq().current*1e6}
+
 
 class InstructionBenchmark(Benchmark):
     def __init__(self, instruction='addq $1, $0',
@@ -248,6 +274,7 @@ class InstructionBenchmark(Benchmark):
             self._loop_tail = textwrap.dedent('''\
                 %"ret" = phi {type} [{}, %"entry"], [%"dst0_0.out", %"loop"]\
                 '''.format(dst_operands[0][2], type=dst_operands[0][1]))
+
 
 class AddressGenerationBenchmark(Benchmark):
     def __init__(self,
@@ -378,6 +405,7 @@ class AddressGenerationBenchmark(Benchmark):
             %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}_0.out", %"loop"]\
             '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1]))
 
+
 class LoadBenchmark(Benchmark):
     def __init__(self, chain_length=2048, repeat=100000, structure='linear', parallelism=6):
         '''
@@ -396,7 +424,7 @@ class LoadBenchmark(Benchmark):
             ctypes.c_int, ctypes.POINTER(element_type), ctypes.c_int)
         self.chain_length = chain_length
         self.repeat = repeat
-        self._iterations = chain_length*repeat
+        self.iterations = chain_length*repeat
         self.parallelism = parallelism
         self.structure = structure
         self._pointer_field = (element_type * chain_length)()
@@ -677,7 +705,10 @@ if __name__ == '__main__':
                       ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
         parallelism=1)
 
-    verbose = 0
+    modules = {'add r64 r64 TP': modules['add r64 r64 TP'],
+               }#'LD random TP': modules['LD random TP']}
+    
+    verbose = 1
     for key, module in modules.items():
         if verbose > 0:
             print("=== LLVM")
