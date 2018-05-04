@@ -6,6 +6,7 @@ import textwrap
 import itertools
 import random
 import collections
+import pprint
 
 import llvmlite.binding as llvm
 import psutil
@@ -45,11 +46,11 @@ class Benchmark:
         'float*': ctypes.POINTER(ctypes.c_float),
         'double*': ctypes.POINTER(ctypes.c_double),
     }
-    def __init__(self, parallel=1, serial=1):
+    def __init__(self, parallel=1, serial=5):
         self._loop_init = ''
         self._ret_llvmtype = 'i64'
         self._ret_ctype = self.LLVM2CTYPE[self._ret_llvmtype]
-        self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)
+        self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
         self.parallel = parallel
         self.serial = serial
 
@@ -73,31 +74,32 @@ class Benchmark:
                        if not k.startswith('_')]))
 
     def get_ir(self):
-        return textwrap.dedent('''\
-            define {ret_type} @"test"(i64 %"N")
-            {{
-            entry:
-              %"N.fp" = sitofp i64 %"N" to double
-              %"loop_cond" = fcmp olt double 0.0, %"N.fp"
-            {loop_init}
-              br i1 %"loop_cond", label %"loop", label %"end"
-        
-            loop:
-              %"loop_counter" = phi double [0.0, %"entry"], [%"loop_counter.1", %"loop"]
-            {loop_body}
-              %"loop_counter.1" = fadd double %"loop_counter", 1.0
-              %"loop_cond.1" = fcmp olt double %"loop_counter.1", %"N.fp"
-              br i1 %"loop_cond.1", label %"loop", label %"end"
-        
-            end:
-            {loop_tail}
-              ret {ret_type} %"ret"
-            }}
-            ''').format(
-                ret_type=self._ret_llvmtype,
-                loop_init=textwrap.indent(self._loop_init, '  '),
-                loop_body=textwrap.indent(self._loop_body, '  '),
-                loop_tail=textwrap.indent(self._loop_tail, '  '))
+        # FP add loop - has issues
+        #return textwrap.dedent('''\
+        #    define {ret_type} @"test"(i64 %"N")
+        #    {{
+        #    entry:
+        #      %"N.fp" = sitofp i64 %"N" to double
+        #      %"loop_cond" = fcmp olt double 0.0, %"N.fp"
+        #    {loop_init}
+        #      br i1 %"loop_cond", label %"loop", label %"end"
+        #
+        #    loop:
+        #      %"loop_counter" = phi double [0.0, %"entry"], [%"loop_counter.1", %"loop"]
+        #    {loop_body}
+        #      %"loop_counter.1" = fadd double %"loop_counter", 1.0
+        #      %"loop_cond.1" = fcmp olt double %"loop_counter.1", %"N.fp"
+        #      br i1 %"loop_cond.1", label %"loop", label %"end"
+        #
+        #    end:
+        #    {loop_tail}
+        #      ret {ret_type} %"ret"
+        #    }}
+        #    ''').format(
+        #        ret_type=self._ret_llvmtype,
+        #        loop_init=textwrap.indent(self._loop_init, '  '),
+        #        loop_body=textwrap.indent(self._loop_body, '  '),
+        #        loop_tail=textwrap.indent(self._loop_tail, '  '))
         return textwrap.dedent('''\
             define {ret_type} @"test"(i64 %"N")
             {{
@@ -459,6 +461,10 @@ class LoadBenchmark(Benchmark):
         self.parallel = parallel
         self.structure = structure
         self._pointer_field = (element_type * chain_length)()
+        if chain_length % serial != 0:
+            raise ValueError(
+                "chain_length ({}) needs to be divisible by serial factor ({}).".format(
+                    chain_length, serial))
 
         # Initialize pointer field
         # Field must represent a ring of pointers
@@ -490,7 +496,7 @@ class LoadBenchmark(Benchmark):
 
     def get_ir(self):
         '''
-        Return LLVM IR equivalent of (in case of parallel == 1):
+        Return LLVM IR equivalent of (in case of parallel == 1 and serial == 1):
 
         int test(int** ptrf, int repeat) {
             int** p0 = (int**)ptrf[0];
@@ -531,17 +537,23 @@ class LoadBenchmark(Benchmark):
         loop2:\n''')
 
         for p in range(self.parallel):
-            ret += ('  %"p_{p}" = phi i32** '
-                    '[ %"p0_{p}", %"loop1" ], [ %"p_{p}.1", %"loop2" ]\n').format(p=p)
-
+            ret += ('  %"p_{p}.0" = phi i32** '
+                    '[ %"p0_{p}", %"loop1" ], [ %"p_{p}.{s_max}", %"loop2" ]\n').format(
+                        p=p, s_max=self.serial)
+        
         # load p, compare to p0 and or-combine results
         for p in range(self.parallel):
-            ret += ('  %"pp_{p}" = bitcast i32** %"p_{p}" to i32***\n'
-                    '  %"p_{p}.1" = load i32**, i32*** %"pp_{p}", align 8\n'
-                    # Compare is needed for all registers, for llvm not to remove unused 
-                    # instructions:
-                    '  %"cmp_{p}.loop2" = icmp eq i32** %"p_{p}.1", %"p0_{p}"\n'
-                    ).format(p=p)
+            for s in range(self.serial):
+                ret += ('  %"pp_{p}.{s}" = bitcast i32** %"p_{p}.{s_prev}" to i32***\n'
+                        '  %"p_{p}.{s}" = load i32**, i32*** %"pp_{p}.{s}", align 8\n').format(
+                            p=p, s=s+1, s_prev=s)
+
+            # Compare is needed for all registers, for llvm not to remove unused 
+            # instructions:
+            ret += '  %"cmp_{p}.loop2" = icmp eq i32** %"p_{p}.{s_max}", %"p0_{p}"\n'.format(
+                p=p, s_max=self.serial)
+        
+        # TODO tree reduce cmp to make use of all cmp_* values
 
         # It is sufficient to use only one compare, all others will be eliminated
         ret += '  br i1 %"cmp_0.loop2", label %"loop3", label %"loop2"\n'
@@ -573,7 +585,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('i','i64', '1'),),
         parallel=1,
-        serial=1)
+        serial=5)
 
     # register source
     modules['add r64 r64 LAT'] = InstructionBenchmark(
@@ -582,7 +594,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('r','i64', '1'),),
         parallel=1,
-        serial=1)
+        serial=5)
 
     # multiple instructions
     modules['4xadd i64 r64 LAT'] = InstructionBenchmark(
@@ -591,7 +603,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('i','i64', '1'),),
         parallel=1,
-        serial=1)
+        serial=5)
 
     # immediate source
     modules['add i64 r64 TP'] = InstructionBenchmark(
@@ -599,7 +611,8 @@ if __name__ == '__main__':
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('i','i64', '1'),),
-        parallel=1)
+        parallel=10,
+        serial=5)
 
     # register source
     modules['add r64 r64 TP'] = InstructionBenchmark(
@@ -608,7 +621,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('r','i64', '1'),),
         parallel=10,
-        serial=1)
+        serial=5)
 
     # multiple instructions
     modules['4xadd i64 r64 TP'] = InstructionBenchmark(
@@ -616,7 +629,8 @@ if __name__ == '__main__':
         dst_operands=(),
         dstsrc_operands=(('r','i64', '0'),),
         src_operands=(('i','i64', '1'),),
-        parallel=1)
+        parallel=10,
+        serial=1)
 
     modules['lea base LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -625,7 +639,7 @@ if __name__ == '__main__':
         width=None,
         destination='base',
         parallel=1,
-        serial=1)
+        serial=5)
 
     modules['lea index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -634,7 +648,7 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=1,
-        serial=1)
+        serial=5)
     
     modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
@@ -643,7 +657,7 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=1,
-        serial=1)
+        serial=5)
 
     modules['lea base+index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -652,7 +666,7 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=1,
-        serial=1)
+        serial=5)
 
     modules['lea base+offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', None, '42'),
@@ -661,7 +675,7 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=1,
-        serial=1)
+        serial=5)
 
     modules['lea base TP'] = AddressGenerationBenchmark(
         offset=None,
@@ -712,25 +726,25 @@ if __name__ == '__main__':
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='linear',
         parallel=1,
-        serial=1)
+        serial=2)
 
     modules['LD random LAT'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='random',
         parallel=1,
-        serial=1)
+        serial=2)
 
     modules['LD linear TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='linear',
-        parallel=10,
-        serial=1)
+        parallel=4,
+        serial=2)
 
     modules['LD random TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='random',
-        parallel=10,
-        serial=1)
+        parallel=4,
+        serial=2)
 
     modules['vaddpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
         instruction='vaddpd $1, $0, $0',
@@ -738,7 +752,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
         src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
         parallel=1,
-        serial=1)
+        serial=5)
     
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) LAT'] = InstructionBenchmark(
         instruction='vmulpd $1, $0, $0',
@@ -746,7 +760,7 @@ if __name__ == '__main__':
         dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
         src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
         parallel=1,
-        serial=1)
+        serial=5)
     
     # This is actually a TP benchmark with parallel=1, because there are no inter-loop depencies:
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dst) TP'] = InstructionBenchmark(
@@ -757,17 +771,22 @@ if __name__ == '__main__':
                       ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
         parallel=1,
         serial=1)
-
-    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if 'lea' in k])
+    
+    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('4xadd')])
     
     verbose = 2 if '-v' in sys.argv else 0
     for key, module in modules.items():
         if verbose > 0:
+            print("=== Benchmark")
+            print(repr(module))
             print("=== LLVM")
             print(module.get_ir())
             print("=== Assembly")
             print(module.get_assembly())
-        r = module.build_and_execute(repeat=5)
+        r = module.build_and_execute(repeat=3)
+        if verbose > 0:
+            print("=== Result")
+            pprint.pprint(r)
 
         cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
         print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
