@@ -7,6 +7,7 @@ import itertools
 import random
 import collections
 import pprint
+import math
 
 import llvmlite.binding as llvm
 import psutil
@@ -16,20 +17,39 @@ import psutil
 #   * DSL?
 # * Test cases:
 #   * Instructions:
-#     * arithmetics \w reg and/or imm.
+#     * [x] arithmetics \w reg and/or imm.
 #       * scalar
 #       * packed
-#     * lea
-#     * LOAD / mov \w mem
-#   * Single Latency
-#   * Single Throughput
-#   * Combined Throughput
-#   * Random Throughput
-# * IACA marked binary output generation
-# * Fuzzing algorithm
-# * CLI
+#     * [x] lea
+#     * [x] LOAD / mov \w mem
+#     * [TODO] STORE / mov to mem
+#   * [x] Single Latency
+#   * [x] Single Throughput
+#   * [TODO] Combined Throughput
+#   * [TODO] Random Throughput
+# * [TODO] Automated TP, Lat, #pipeline analysis
+# * [TODO] IACA marked binary output generation
+# * [TODO] Fuzzing algorithm
+# * [TODO] CLI
 # * C based timing routine? As an extension?
 # * make sanity checks during runtime, check for fixed frequency and pinning
+
+def floor_harmonic_fraction(n, error=0.1):
+    '''
+    Finds closest floored integer or inverse integer and returns error.
+    
+    (numerator, denominator, relative error) where either numerator or denominator is exactly one.
+    '''
+    floor_n = math.floor(n)
+    if floor_n > 0:
+        return (floor_n, 1, 1 - floor_n/n)
+    else:
+        i = 2
+        while (1/i) > n:
+            i += 1
+        
+        return (1, i, 1 - (1/i)/n)
+
 
 class Benchmark:
     LLVM2CTYPE = {
@@ -128,7 +148,7 @@ class Benchmark:
     def prepare_arguments(self, previous_args=None, time_factor=1.0):
         '''Build argument tuple, to be passed to low level function.'''
         if previous_args is None:
-            return (1000,)
+            return (100,)
         else:
             return (int(previous_args[0]*time_factor),)
     
@@ -201,6 +221,54 @@ class Benchmark:
                 'arguments': args,
                 'runtimes': runtimes,
                 'frequency': psutil.cpu_freq().current*1e6}
+
+    @classmethod
+    def get_latency(cls, max_serial=6, print_table=False, **kwargs):
+        if print_table:
+            print(' s |'+''.join([' {:^5}'.format(i) for i in range(1, max_serial)]))
+            print('   | ', end='')
+        serial_runs = []
+        for s in range(1, max_serial):
+            m = cls(serial=s, parallel=1, **kwargs)
+            r = m.build_and_execute(repeat=1)
+            cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*m.parallel*m.serial)
+            if print_table:
+                print('{:.3f} '.format(cy_per_it), end='')
+            sys.stdout.flush()
+            
+            serial_runs.append((cy_per_it, floor_harmonic_fraction(cy_per_it), m))
+        
+        if print_table:
+            print()
+            print('LAT: {lat[0]}/{lat[1]}cy (min. error {lat[2]:.1%})'.format(
+            lat=min(serial_runs)[1]))
+        
+        return min(serial_runs)[1]
+    
+    @classmethod
+    def get_throughput(cls, max_serial=6, max_parallel=17, print_table=False, **kwargs):
+        if print_table:
+            print('s\p |'+''.join([' {:^5}'.format(i) for i in range(2, max_parallel)]))
+        parallel_runs = []
+        for s in range(1, max_serial):
+            if print_table:
+                print('{:>3} | '.format(s), end='')
+            for p in range(2, max_parallel):
+                m = cls(serial=s, parallel=p, **kwargs)
+                r = m.build_and_execute(repeat=1)
+                cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*m.parallel*m.serial)
+                if print_table:
+                    print('{:.3f} '.format(cy_per_it), end='')
+                sys.stdout.flush()
+                parallel_runs.append((cy_per_it, floor_harmonic_fraction(cy_per_it), m))
+            if print_table:
+                print()
+        
+        if print_table:
+            print('TP: {tp[0]}/{tp[1]}cy (min. error {tp[2]:.1%});'.format(
+            tp=min(parallel_runs)[1]))
+        
+        return min(parallel_runs)[1]
 
 
 class InstructionBenchmark(Benchmark):
@@ -486,7 +554,7 @@ class LoadBenchmark(Benchmark):
     def prepare_arguments(self, previous_args=None, time_factor=1.0):
         '''Build argument tuple, to be passed to low level function.'''
         if previous_args is None:
-            return (self._pointer_field, 1000)
+            return (self._pointer_field, 100)
         else:
             return (previous_args[0], int(previous_args[1]*time_factor))
     
@@ -772,25 +840,42 @@ if __name__ == '__main__':
         parallel=1,
         serial=1)
     
-    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('4xadd')])
+    modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('add')])
     
-    verbose = 2 if '-v' in sys.argv else 0
-    for key, module in modules.items():
-        if verbose > 0:
-            print("=== Benchmark")
-            print(repr(module))
-            print("=== LLVM")
-            print(module.get_ir())
-            print("=== Assembly")
-            print(module.get_assembly())
-        r = module.build_and_execute(repeat=3)
-        if verbose > 0:
-            print("=== Result")
-            pprint.pprint(r)
+    #verbose = 2 if '-v' in sys.argv else 0
+    #for key, module in modules.items():
+    #    if verbose > 0:
+    #        print("=== Benchmark")
+    #        print(repr(module))
+    #        print("=== LLVM")
+    #        print(module.get_ir())
+    #        print("=== Assembly")
+    #        print(module.get_assembly())
+    #    r = module.build_and_execute(repeat=3)
+    #    if verbose > 0:
+    #        print("=== Result")
+    #        pprint.pprint(r)
+    #
+    #    cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
+    #    print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
+    #        key=key,
+    #        module=module,
+    #        cy_per_it=cy_per_it,
+    #        runtime_sum=sum(r['runtimes'])))
+    
 
-        cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
-        print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
-            key=key,
-            module=module,
-            cy_per_it=cy_per_it,
-            runtime_sum=sum(r['runtimes'])))
+    
+    InstructionBenchmark.get_latency(
+        instruction='vmulpd $1, $0, $0',
+        dst_operands=(),
+        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
+                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
+        print_table=True)
+    InstructionBenchmark.get_throughput(
+        instruction='vmulpd $1, $0, $0',
+        dst_operands=(),
+        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
+                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
+        print_table=True)
