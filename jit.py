@@ -52,24 +52,7 @@ def floor_harmonic_fraction(n, error=0.1):
 
 
 class Benchmark:
-    LLVM2CTYPE = {
-        'i8': ctypes.c_int8,
-        'i16': ctypes.c_int16,
-        'i32': ctypes.c_int32,
-        'i64': ctypes.c_int64,
-        'float': ctypes.c_float,
-        'double': ctypes.c_double,
-        'i8*': ctypes.POINTER(ctypes.c_int8),
-        'i16*': ctypes.POINTER(ctypes.c_int16),
-        'i32*': ctypes.POINTER(ctypes.c_int32),
-        'i64*': ctypes.POINTER(ctypes.c_int64),
-        'float*': ctypes.POINTER(ctypes.c_float),
-        'double*': ctypes.POINTER(ctypes.c_double),
-    }
     def __init__(self, parallel=1, serial=5):
-        self._loop_init = ''
-        self._ret_llvmtype = 'i64'
-        self._ret_ctype = self.LLVM2CTYPE[self._ret_llvmtype]
         self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
         self.parallel = parallel
         self.serial = serial
@@ -82,11 +65,6 @@ class Benchmark:
                 "=r,i,r" (i64 1, i64 %"checksum")\
             ''')
 
-        # Set %"ret" to something, needs to be a constant or phi function
-        self._loop_tail = textwrap.dedent('''\
-            %"ret" = phi i64 [0, %"entry"], [%"checksum.1", %"loop"]\
-            ''')
-
     def __repr__(self):
         return '{}({})'.format(
             self.__class__.__name__,
@@ -96,12 +74,11 @@ class Benchmark:
     def get_ir(self):
         # FP add loop - has issues
         #return textwrap.dedent('''\
-        #    define {ret_type} @"test"(i64 %"N")
+        #    define i64 @"test"(i64 %"N")
         #    {{
         #    entry:
         #      %"N.fp" = sitofp i64 %"N" to double
         #      %"loop_cond" = fcmp olt double 0.0, %"N.fp"
-        #    {loop_init}
         #      br i1 %"loop_cond", label %"loop", label %"end"
         #
         #    loop:
@@ -112,20 +89,16 @@ class Benchmark:
         #      br i1 %"loop_cond.1", label %"loop", label %"end"
         #
         #    end:
-        #    {loop_tail}
-        #      ret {ret_type} %"ret"
+        #      %"ret" = phi i64 [0, %"entry"], [%"loop_counter", %"loop"]
+        #      ret i64 %"ret"
         #    }}
         #    ''').format(
-        #        ret_type=self._ret_llvmtype,
-        #        loop_init=textwrap.indent(self._loop_init, '  '),
-        #        loop_body=textwrap.indent(self._loop_body, '  '),
-        #        loop_tail=textwrap.indent(self._loop_tail, '  '))
+        #        loop_body=textwrap.indent(self._loop_body, '  '))
         return textwrap.dedent('''\
-            define {ret_type} @"test"(i64 %"N")
+            define i64 @"test"(i64 %"N")
             {{
             entry:
               %"loop_cond" = icmp slt i64 0, %"N"
-            {loop_init}
               br i1 %"loop_cond", label %"loop", label %"end"
 
             loop:
@@ -136,14 +109,11 @@ class Benchmark:
               br i1 %"loop_cond.1", label %"loop", label %"end"
 
             end:
-            {loop_tail}
-              ret {ret_type} %"ret"
+              %"ret" = phi i64 [0, %"entry"], [%"loop_counter", %"loop"]
+              ret i64 %"ret"
             }}
             ''').format(
-                ret_type=self._ret_llvmtype,
-                loop_init=textwrap.indent(self._loop_init, '  '),
-                loop_body=textwrap.indent(self._loop_body, '  '),
-                loop_tail=textwrap.indent(self._loop_tail, '  '))
+                loop_body=textwrap.indent(self._loop_body, '  '))
 
     def prepare_arguments(self, previous_args=None, time_factor=1.0):
         '''Build argument tuple, to be passed to low level function.'''
@@ -290,15 +260,12 @@ class InstructionBenchmark(Benchmark):
         self.dst_operands = dst_operands
         self.dstsrc_operands = dstsrc_operands
         self.src_operands = src_operands
-        self._loop_init = ''
         self._loop_body = ''
         if len(dst_operands) + len(dstsrc_operands) != 1:
             raise NotImplemented("Must have exactly one dst or dstsrc operand.")
         if not all([op[0] in 'irx'
                     for op in itertools.chain(dst_operands, dstsrc_operands, src_operands)]):
             raise NotImplemented("This class only supports register and immediate operands.")
-
-        self._ret_llvmtype = dst_operands[0][1] if dst_operands else dstsrc_operands[0][1]
 
         # Part 1: PHI functions and initializations
         for i, dstsrc_op in enumerate(dstsrc_operands):
@@ -358,17 +325,6 @@ class InstructionBenchmark(Benchmark):
                         constraints=constraints,
                         args=args,
                         p=p)
-
-        # Set %"ret" to something, needs to be a constant or phi function
-        if dstsrc_operands:
-            self._loop_tail = textwrap.dedent('''\
-                %"ret" = phi {type} [{}, %"entry"], [%"dstsrc0_0.out", %"loop"]\
-                '''.format(dstsrc_operands[0][2], type=dstsrc_operands[0][1]))
-        else:
-
-            self._loop_tail = textwrap.dedent('''\
-                %"ret" = phi {type} [{}, %"entry"], [%"dst0_0.out", %"loop"]\
-                '''.format(dst_operands[0][2], type=dst_operands[0][1]))
 
 
 class AddressGenerationBenchmark(Benchmark):
@@ -439,7 +395,6 @@ class AddressGenerationBenchmark(Benchmark):
         if serial != 1 and not (base or index):
             raise ValueError("Serial > 1 only works with index and/or base in use.")
 
-        self._loop_init = ''
         self._loop_body = ''
 
         ops = ''
@@ -461,10 +416,8 @@ class AddressGenerationBenchmark(Benchmark):
         ops += ' '
 
         if destination == 'base':
-            self._ret_llvmtype = base[1]
             destination_reg = base
         else:  # destination == 'index'
-            self._ret_llvmtype = index[1]
             destination_reg = index
 
         # Part 1: PHI function for destination
@@ -503,12 +456,6 @@ class AddressGenerationBenchmark(Benchmark):
                         p=p,
                         s_out=s+1)
 
-        # Set %"ret" to something, needs to be a constant or phi function
-        self._loop_tail = textwrap.dedent('''\
-            %"ret" = phi {type} [{initial_value}, %"entry"], [%"{name}_0.{s_out}", %"loop"]\
-            '''.format(name=destination, initial_value=destination_reg[2], type=destination_reg[1],
-                       s_out=self.serial))
-
 
 class LoadBenchmark(Benchmark):
     def __init__(self, chain_length=2048, structure='linear', parallel=6, serial=4):
@@ -519,9 +466,7 @@ class LoadBenchmark(Benchmark):
         *structure* may be 'linear' (1-offsets) or 'random'.
         '''
         Benchmark.__init__(self, parallel=parallel, serial=serial)
-        self._loop_init = ''
         self._loop_body = ''
-        self._loop_tail = ''
         element_type = ctypes.POINTER(ctypes.c_int)
         self._function_ctype = ctypes.CFUNCTYPE(
             ctypes.c_int, ctypes.POINTER(element_type), ctypes.c_int)
@@ -840,42 +785,53 @@ if __name__ == '__main__':
         parallel=1,
         serial=1)
     
-    modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('add')])
+    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea')])
     
-    #verbose = 2 if '-v' in sys.argv else 0
-    #for key, module in modules.items():
-    #    if verbose > 0:
-    #        print("=== Benchmark")
-    #        print(repr(module))
-    #        print("=== LLVM")
-    #        print(module.get_ir())
-    #        print("=== Assembly")
-    #        print(module.get_assembly())
-    #    r = module.build_and_execute(repeat=3)
-    #    if verbose > 0:
-    #        print("=== Result")
-    #        pprint.pprint(r)
+    verbose = 2 if '-v' in sys.argv else 0
+    for key, module in modules.items():
+        if verbose > 0:
+            print("=== Benchmark")
+            print(repr(module))
+            print("=== LLVM")
+            print(module.get_ir())
+            print("=== Assembly")
+            print(module.get_assembly())
+        r = module.build_and_execute(repeat=3)
+        if verbose > 0:
+            print("=== Result")
+            pprint.pprint(r)
+    
+        cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
+        print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
+            key=key,
+            module=module,
+            cy_per_it=cy_per_it,
+            runtime_sum=sum(r['runtimes'])))
+    
+    #InstructionBenchmark.get_latency(
+    #    instruction='vmulpd $1, $0, $0',
+    #    dst_operands=(),
+    #    dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+    #    src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
+    #                  ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
+    #    print_table=True)
+    #InstructionBenchmark.get_throughput(
+    #    instruction='vmulpd $1, $0, $0',
+    #    dst_operands=(),
+    #    dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+    #    src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
+    #                  ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
+    #    print_table=True)
     #
-    #    cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
-    #    print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
-    #        key=key,
-    #        module=module,
-    #        cy_per_it=cy_per_it,
-    #        runtime_sum=sum(r['runtimes'])))
-    
-
-    
-    InstructionBenchmark.get_latency(
-        instruction='vmulpd $1, $0, $0',
-        dst_operands=(),
-        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
-                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
-        print_table=True)
-    InstructionBenchmark.get_throughput(
-        instruction='vmulpd $1, $0, $0',
-        dst_operands=(),
-        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
-                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
-        print_table=True)
+    #InstructionBenchmark.get_latency(
+    #    instruction='nop',
+    #    dst_operands=(),
+    #    dstsrc_operands=(('r','i8', '0'),),
+    #    src_operands=(),
+    #    print_table=True)
+    #InstructionBenchmark.get_throughput(
+    #    instruction='nop',
+    #    dst_operands=(),
+    #    dstsrc_operands=(('r','i8', '0'),),
+    #    src_operands=(),
+    #    print_table=True)
