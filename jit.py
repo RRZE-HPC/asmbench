@@ -72,7 +72,7 @@ class Benchmark:
                        if not k.startswith('_')]))
 
     def get_ir(self):
-        # FP add loop - has issues
+        # FP add loop - may have issues
         #return textwrap.dedent('''\
         #    define i64 @"test"(i64 %"N")
         #    {{
@@ -89,7 +89,8 @@ class Benchmark:
         #      br i1 %"loop_cond.1", label %"loop", label %"end"
         #
         #    end:
-        #      %"ret" = phi i64 [0, %"entry"], [%"loop_counter", %"loop"]
+        #      %"ret.fp" = phi double [0.0, %"entry"], [%"loop_counter", %"loop"]
+        #      %"ret" = fptosi double %"ret.fp" to i64
         #      ret i64 %"ret"
         #    }}
         #    ''').format(
@@ -654,6 +655,15 @@ if __name__ == '__main__':
         parallel=1,
         serial=5)
 
+    modules['lea base+offset LAT'] = AddressGenerationBenchmark(
+        offset=('i', None, '23'),
+        base=('r', 'i64', '666'),
+        index=None,
+        width=None,
+        destination='base',
+        parallel=1,
+        serial=5)
+
     modules['lea index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
         base=None,
@@ -692,6 +702,15 @@ if __name__ == '__main__':
 
     modules['lea base TP'] = AddressGenerationBenchmark(
         offset=None,
+        base=('r', 'i64', '666'),
+        index=None,
+        width=None,
+        destination='base',
+        parallel=10,
+        serial=1)
+
+    modules['lea base+offset TP'] = AddressGenerationBenchmark(
+        offset=('i', None, '23'),
         base=('r', 'i64', '666'),
         index=None,
         width=None,
@@ -776,16 +795,15 @@ if __name__ == '__main__':
         serial=5)
     
     # This is actually a TP benchmark with parallel=1, because there are no inter-loop depencies:
-    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dst) TP'] = InstructionBenchmark(
+    modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) TP'] = InstructionBenchmark(
         instruction='vmulpd $1, $2, $0',
-        dst_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        dstsrc_operands=(),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
-                      ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
-        parallel=1,
+        dst_operands=(),
+        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
+        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        parallel=10,
         serial=1)
     
-    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea')])
+    modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea base LAT')])
     
     verbose = 2 if '-v' in sys.argv else 0
     for key, module in modules.items():
