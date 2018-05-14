@@ -5,25 +5,24 @@ import itertools
 
 # TODO use abc to force implementation of interface requirements
 
-# TODO Should Register contain a state (i.e. register name)? I think not. That should only come when
-# synthesizing ir and evaluating joined(?) registers...
-
-# NEEDS CONCEPTUAL WORK!
-
-
-
 class Operand:
     def __init__(self, llvm_type):
         self.llvm_type = llvm_type
     
+    def get_ir_repr(self):
+        raise NotImplementedError()
+    
     def get_constraint_char(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
 
 class Immediate(Operand):
     def __init__(self, llvm_type, value):
         Operand.__init__(self, llvm_type)
         self.value = value
+        
+    def get_ir_repr(self):
+        return self.value
     
     def get_constraint_char(self):
         return 'i'
@@ -64,6 +63,9 @@ class MemoryReference(Operand):
 
         if not index and not width and not offset and not base:
             raise ValueError("Must provide at least an offset or base.")
+        
+    def get_ir_repr(self):
+        pass # TODO
 
     def get_constraint_char(self):
         return 'm'
@@ -79,7 +81,8 @@ class Register(Operand):
         self.source = None
         self.destinations = []
         assert len(name) > 0, "name needs to be at least of length 1."
-        self.name = name
+        self._name = name
+        self._named = False
     
     def set_source(self, source):
         if source is None:
@@ -89,9 +92,11 @@ class Register(Operand):
     def add_destination(self, destination):
         self.destinations.append(destination)
     
-    def get_name(self):
+    def get_ir_repr(self):
+        if self._named:
+            return '%"{}"'.format(self._name)
         # Check if name is already in use and append integer
-        name = self.name
+        name = self._name
         if name in self._REGISTER_NAMES_IN_USE:
             i = 0
             name_test = name
@@ -99,25 +104,30 @@ class Register(Operand):
                 name_test = '{}.{}'.format(name, i)
                 i += 1
             name = name_test
-        self._REGISTER_NAMES_IN_USE.append(name)
+        self._set_name(name)
         return '%"{}"'.format(name)
+    
+    def _set_name(self, name):
+        if self._named:
+            raise RuntimeError("Already named.")
+        else:
+            self._name = name
+            self._REGISTER_NAMES_IN_USE.append(name)
+            self._named = True
     
     def get_constraint_char(self):
         return self.constraint_char
-
-
-class Synthable:
-    def __init__(self):
-        pass
     
-    def build_ir(self):
-        raise NotImplemented()
-    
-    def get_source_registers(self):
-        raise NotImplemented()
-    
-    def get_destination_registers(self):
-        raise NotImplemente()
+    def join(self, other):
+        if self._named and other._named and self._name == other._name:
+            # nothing to do, already joined or equal
+            pass
+        elif self._named and not other._named:
+            other._set_name(self._name)
+        elif other._named and not self._named:
+            self._set_name(other._name)
+        else:
+            other._set_name(self.get_ir_repr())
 
     def __repr__(self):
         return '{}({})'.format(
@@ -126,9 +136,27 @@ class Synthable:
                        if not k.startswith('_')]))
 
 
+class Synthable:
+    def __init__(self):
+        pass
+    
+    def build_ir(self):
+        raise NotImplementedError()
+    
+    def get_source_registers(self):
+        raise NotImplementedError()
+    
+    def get_destination_registers(self):
+        raise NotImplementeError()
+
+
 class Operation(Synthable):
     '''Base class for operations.'''
-    pass
+    def __repr__(self):
+        return '{}({})'.format(
+            self.__class__.__name__,
+            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
+                       if not k.startswith('_')]))
 
 
 class Instruction(Operation):
@@ -159,19 +187,16 @@ class Instruction(Operation):
         # Build argument string from operands and register names
         operands = []
         for sop in self.source_operands:
-            if isinstance(sop, Immediate):
-                operands.append('{type} {val}'.format(type=sop.llvm_type, val=sop.value))
-            elif isinstance(sop, Register):
-                # Assuming register
-                operands.append('{type} {name}'.format(type=sop.llvm_type, name=sop.get_name()))
+            if isinstance(sop, Immediate) or isinstance(sop, Register):
+                operands.append('{type} {repr}'.format(type=sop.llvm_type, repr=sop.get_ir_repr()))
             else:
                 raise NotImplemente("Only register and immediate operands are supported.")
         args = ', '.join(operands)
         
         # Build instruction from instruction and operands
         return ('{dst_reg} = call {dst_type} asm sideeffect'
-                ' "{instruction}", "{constraints}" ({args})\n').format(
-                    dst_reg=self.destination_operand.get_name(),
+                ' "{instruction}", "{constraints}" ({args})').format(
+                    dst_reg=self.destination_operand.get_ir_repr(),
                     dst_type=self.destination_operand.llvm_type,
                     instruction=self.instruction,
                     constraints=constraints,
@@ -203,6 +228,43 @@ class Serialized(Synthable):
     def __init__(self, synths):
         self.synths = synths
         assert all([isinstance(s, Synthable) for s in synths]), "All elements need to be Sythable"
+    
+    def get_source_registers(self):
+        sources = []
+        last_destinations = []
+        for s in self.synths:
+            for src in s.get_source_registers():
+                if not any([dst.llvm_type == src.llvm_type
+                            for dst in s.get_destination_registers()]):
+                    sources.apend(src)
+            last_destinations = s.get_destination_registers()
+        return sources
+    
+    def get_destination_registers(self):
+        if self.synths:
+            return self.synths[-1].get_destination_registers()
+        else:
+            return []
+    
+    def build_ir(self):
+        code = []
+        last = None
+        last_dsts = []
+        for s in self.synths:
+            matched = 0
+            for src in s.get_source_registers():
+                for dst in last_dsts:
+                    if src.llvm_type == dst.llvm_type:
+                        last_dsts.remove(dst)
+                        src.join(dst)
+                        matched += 1
+            if matched == 0 and last is not None:
+                raise ValueError("Could not find a type match to serialize {} to {}.".format(
+                    last, self))
+            code.append(s.build_ir())
+            last = s
+            last_dsts = s.get_destination_registers()
+        return '\n'.join(code)
 
 
 class Parallelized(Synthable):
@@ -210,10 +272,55 @@ class Parallelized(Synthable):
         self.synths = synths
         assert all([isinstance(s, Synthable) for s in synths]), "All elements need to be Sythable"
 
+    def get_source_registers(self):
+        sources = []
+        for s in self.synths:
+            sources += s.get_source_registers()
+        return sources
+    
+    def get_destination_registers(self):
+        destinations = []
+        for s in self.synths:
+            destinations += s.get_destination_registers()
+        return destinations
+    
+    def build_ir(self):
+        code = []
+        for s in self.synths:
+            code.append(s.build_ir())
+        return '\n'.join(code)
+
 
 if __name__ == '__main__':
-    i = Instruction(
+    i1 = Instruction(
         instruction='add $2, $0',
         destination_operand=Register('i64', 'r'),
         source_operands=[Register('i64', 'r'), Immediate('i64', '1')])
-    print(i.build_ir())
+    i2 = Instruction(
+        instruction='sub $2, $0',
+        destination_operand=Register('i64', 'r'),
+        source_operands=[Register('i64', 'r'), Immediate('i64', '1')])
+    s = Serialized([i1, i2])
+    i3 = Instruction(
+        instruction='mul $1, $0',
+        destination_operand=Register('i64', 'r'),
+        source_operands=[Register('i64', 'r'), Register('i64', 'r')])
+    i4 = Instruction(
+        instruction='div $2, $0',
+        destination_operand=Register('i64', 'r'),
+        source_operands=[Register('i64', 'r'), Immediate('i64', '23')])
+    i5 = Instruction(
+        instruction='mul $2, $0',
+        destination_operand=Register('i64', 'r'),
+        source_operands=[Register('i64', 'r'), Immediate('i64', '23')])
+    i6 = Instruction(
+        instruction='add $2, $0',
+        destination_operand=Register('i64', 'r'),
+        source_operands=[Register('i64', 'r'), Register('i64', 'r')])
+    s1 = Serialized([i1, i2])
+    s2 = Serialized([s1, i3])
+    s3 = Serialized([i4, i5])
+    p1 = Parallelized([i6, s2, s3])
+    print(p1.build_ir())
+    print('srcs', p1.get_source_registers())
+    print('dsts', p1.get_destination_registers())
