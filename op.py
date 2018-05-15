@@ -75,22 +75,23 @@ class Register(Operand):
     # Persistent storage of register names
     _REGISTER_NAMES_IN_USE = []
     
+    @staticmethod
+    def match(source_registers, destination_registers):
+        matched = 0
+        for src in source_registers:
+            for dst in destination_registers:
+                if src.llvm_type == dst.llvm_type:
+                    destination_registers.remove(dst)
+                    src.join(dst)
+                    matched += 1
+        return matched
+    
     def __init__(self, llvm_type, constraint_char='r', name='reg'):
         self.llvm_type = llvm_type
         self.constraint_char = constraint_char
-        self.source = None
-        self.destinations = []
         assert len(name) > 0, "name needs to be at least of length 1."
         self._name = name
         self._named = False
-    
-    def set_source(self, source):
-        if source is None:
-            raise ValueError("source is already set. Only single source registers are allowed.")
-        self.source = source
-    
-    def add_destination(self, destination):
-        self.destinations.append(destination)
     
     def get_ir_repr(self):
         if self._named:
@@ -134,7 +135,15 @@ class Register(Operand):
             self.__class__.__name__,
             ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
                        if not k.startswith('_')]))
-
+    
+    def __eq__(self, other):
+        return (self.llvm_type == other.llvm_type and
+                self.constraint_char == other.constraint_char and
+                self._name == other._name and
+                self._named == other._named)
+    
+    def __hash__(self):
+        return hash((self.llvm_type, self.constraint_char, self._name, self._named))
 
 class Synthable:
     def __init__(self):
@@ -148,6 +157,12 @@ class Synthable:
     
     def get_destination_registers(self):
         raise NotImplementeError()
+
+    def __repr__(self):
+        return '{}({})'.format(
+            self.__class__.__name__,
+            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
+                       if not k.startswith('_')]))
 
 
 class Operation(Synthable):
@@ -234,9 +249,10 @@ class Serialized(Synthable):
         last_destinations = []
         for s in self.synths:
             for src in s.get_source_registers():
-                if not any([dst.llvm_type == src.llvm_type
-                            for dst in s.get_destination_registers()]):
-                    sources.apend(src)
+                for dst in last_destinations:
+                    if dst.llvm_type == src.llvm_type:
+                        last_destinations.remove(dst)
+                sources.append(src)
             last_destinations = s.get_destination_registers()
         return sources
     
@@ -249,21 +265,14 @@ class Serialized(Synthable):
     def build_ir(self):
         code = []
         last = None
-        last_dsts = []
         for s in self.synths:
-            matched = 0
-            for src in s.get_source_registers():
-                for dst in last_dsts:
-                    if src.llvm_type == dst.llvm_type:
-                        last_dsts.remove(dst)
-                        src.join(dst)
-                        matched += 1
+            last_dests = last.get_source_registers() if last else []
+            matched = Register.match(s.get_source_registers(), last_dests)
             if matched == 0 and last is not None:
                 raise ValueError("Could not find a type match to serialize {} to {}.".format(
                     last, self))
             code.append(s.build_ir())
             last = s
-            last_dsts = s.get_destination_registers()
         return '\n'.join(code)
 
 
@@ -319,8 +328,9 @@ if __name__ == '__main__':
         source_operands=[Register('i64', 'r'), Register('i64', 'r')])
     s1 = Serialized([i1, i2])
     s2 = Serialized([s1, i3])
+    s2.build_ir()
     s3 = Serialized([i4, i5])
     p1 = Parallelized([i6, s2, s3])
     print(p1.build_ir())
-    print('srcs', p1.get_source_registers())
-    print('dsts', p1.get_destination_registers())
+    print('srcs', [r.get_ir_repr() for r in p1.get_source_registers()])
+    print('dsts', [r.get_ir_repr() for r in p1.get_destination_registers()])
