@@ -4,6 +4,9 @@ import sys
 import collections
 import re
 from pprint import pprint
+import itertools
+
+import op
 
 
 def translate_dag_to_py(raw):
@@ -92,41 +95,10 @@ def translate_to_py(raw, type_, line=None):
     if re.match(r'^[A-Za-z0-9_]+$', raw.strip()):
         return raw.strip()
     
-    print('unmachted type:', type_)
-    print('raw:', raw)
-    print('in line:', line)
+    print('unmachted type:', type_, file=sys.stderr)
+    print('raw:', raw, file=sys.stderr)
+    print('in line:', line, file=sys.stderr)
     sys.exit(1)
-
-data = collections.OrderedDict()
-
-cur_def = None
-for l in sys.stdin.readlines():
-    if cur_def is None:
-        m = re.match(r'^def (?P<name>[A-Za-z0-9_]+) {', l)
-        if m:
-            cur_def = m.group(1)
-            data[cur_def] = collections.OrderedDict()
-    else:
-        if l.startswith('}'):
-            #if cur_def is not None:
-            #    print(cur_def)
-            #    pprint(data[cur_def])
-            #v = data[cur_def]
-            #try:
-            #    print('ASM', v[('string', 'AsmString')])
-            #    print('OUT', v[('dag', 'OutOperandList')])
-            #    print('IN ', v[('dag', 'InOperandList')])
-            #except KeyError:
-            #    # ignoring non-instructions
-            #    pass
-            cur_def = None
-            continue
-        m = re.match(r'(?P<type>[A-Za-z<>]+) (?P<name>[A-Za-z]+) = (?P<value>.+);$', l.strip())
-        if m:
-            g = m.groupdict() 
-            # Handle value types
-            value = translate_to_py(g['value'], g['type'], l)
-            data[cur_def][(g['type'], g['name'])] = value
 
 
 def evt_to_llvm_type(evt):
@@ -166,41 +138,214 @@ def evt_to_llvm_type(evt):
         return type_
 
 
-for instr_name in [k for k, v in data.items() if ('dag', 'OutOperandList') in v]:
-    if 'm' in instr_name:
-        print('skipped', instr_name, 'due to memref')
-        continue
-    instr = data[instr_name]
-    print(instr_name, instr[('string', 'AsmString')])
-    print('   Uses', instr[('list<Register>', 'Uses')])
-    print('   Defines', instr[('list<Register>', 'Defs')])
-    operands = instr[('dag', 'OutOperandList')] + instr[('dag', 'InOperandList')]
-    print('  ', operands)
+def convert_asm_to_att(asm):
+    att = ''
+    
+    ignore_until = []
+    for c in asm:
+        if ignore_until and c != ignore_until[-1]:
+            if c == '{':
+                ignore_until.append('}')
+            continue
+        if ignore_until and c == ignore_until[-1]:
+            ignore_until.pop()
+            continue
+        elif c == '{' or c == '}':
+            # ignoring { and }
+            continue
+        elif c == '|':
+            ignore_until.append('}')
+            continue
+        else:
+            att += c
+    return att
+
+
+def rename_key(d, k_old, k_new, error=False):
+    if k_old in d:
+        d[k_new] = d[k_old]
+        del d[k_old]
+    else:
+        if error:
+            raise KeyError(k_old)
+
+
+def convert_operands(operands, data):
+    '''Take operand string from tablegen and convert it into dictionary.'''
+    operands_dict = {}
     for m in re.finditer(r'(?P<reg_class>[a-zA-Z0-9_]+):(?P<reg_name>\$[a-z0-9]+)', operands):
         d = m.groupdict()
-        print('    ', d['reg_class'], d['reg_name'])
+        constraint = None
+        llvm_types = []
+        operands_dict[d['reg_name']] = llvm_types
+        
+        reg_data = data[d['reg_class']]
+        if ('string', 'OperandType') in reg_data:
+            # Operands, but not registers
+            op_type = reg_data[('string', 'OperandType')]
+            if op_type == 'OPERAND_MEMORY':
+                constraint = 'm'
+                raise ValueError("due to memory operand")
+            elif op_type == 'OPERAND_IMMEDIATE':
+                constraint = 'i'
+                vt = reg_data[('ValueType', 'Type')]
+                llvm_types.append((constraint, evt_to_llvm_type(vt)))
+                continue
+            elif op_type == 'OPERAND_PCREL':
+               raise ValueError("due to pcrel operand")
+            elif op_type == "OPERAND_REGISTER":
+                constraint = 'r'
+                reg_data = data[reg_data[('RegisterClass', 'RegClass')]]
+            else:
+                raise ValueError("due to unknown operand type: {}".format(op_type))
+        if ('list<ValueType>', 'RegTypes') in reg_data:
+            # Registers
+            constraint = 'r'
+            for vt in reg_data[('list<ValueType>', 'RegTypes')].split(', '):
+                llvm_types.append((constraint, evt_to_llvm_type(vt)))
+        
+        if not llvm_types:
+            raise ValueError("no operand types found")
+
+    return operands_dict
+
+data = collections.OrderedDict()
+
+cur_def = None
+for l in sys.stdin.readlines():
+    if cur_def is None:
+        m = re.match(r'^def (?P<name>[A-Za-z0-9_]+) {', l)
+        if m:
+            cur_def = m.group(1)
+            data[cur_def] = collections.OrderedDict()
+    else:
+        if l.startswith('}'):
+            cur_def = None
+            continue
+        m = re.match(r'(?P<type>[A-Za-z<>]+) (?P<name>[A-Za-z]+) = (?P<value>.+);$', l.strip())
+        if m:
+            g = m.groupdict() 
+            # Handle value types
+            value = translate_to_py(g['value'], g['type'], l)
+            data[cur_def][(g['type'], g['name'])] = value
+
+instr_data = collections.OrderedDict()
+
+for instr_name, instr in data.items():
+    # Filter non-instruction and uninteresting ones
+    if ('dag', 'OutOperandList') not in instr:
+        print('skipped', instr_name, 'due to missing OutOperandList', file=sys.stderr)
+        continue
+    if not instr[('string', 'AsmString')]:
+        print('skipped', instr_name, 'due to empty asm string', file=sys.stderr)
+        continue
+    if instr[('string', 'AsmString')].startswith('#') or re.match(r'^[A-Z]+', instr[('string', 'AsmString')]):
+        print('skipped', instr_name, 'due to strange asm string:', instr[('string', 'AsmString')],
+              file=sys.stderr)
+        continue
+    if '%' in instr[('string', 'AsmString')]:
+        print('skipped', instr_name, 'due to hardcoded register in asm string:',
+              instr[('string', 'AsmString')], file=sys.stderr)
+        continue
+    
+    # Build Instruction Info Dictionary
+    instr_info = collections.OrderedDict(
+        [('asm string', convert_asm_to_att(instr[('string', 'AsmString')])),
+         ('source operands', {}),
+         ('destination operands', {}),
+         ('uses', instr[('list<Register>', 'Uses')]),
+         ('defines', instr[('list<Register>', 'Defs')])])
+    operands = instr[('dag', 'OutOperandList')]
+    for m in re.finditer(r'(?P<reg_class>[a-zA-Z0-9_]+):(?P<reg_name>\$[a-z0-9]+)', operands):
+        d = m.groupdict()
+        llvm_types = []
+        instr_info['destination operands'][d['reg_name']] = llvm_types
+        
         reg_data = data[d['reg_class']]
         if ('ValueType', 'Type') in reg_data:
             vt = reg_data[('ValueType', 'Type')]
-            print('      ', vt)
-            print('      ', vt, evt_to_llvm_type(vt))
+            llvm_types.append(evt_to_llvm_type(vt))
         elif ('list<ValueType>', 'RegTypes') in reg_data:
-            print('      ', reg_data[('list<ValueType>', 'RegTypes')])
             for vt in reg_data[('list<ValueType>', 'RegTypes')].split(', '):
-                print('      ', vt, evt_to_llvm_type(vt))
+                llvm_types.append(evt_to_llvm_type(vt))
 
-target = {
-    'VADDPDYrm': {
-        'asm_string': 'vaddpd $2 $0',
-        'source operands': ['4 x double', '4 x double'],
-        'destination operands': ['4 x double'],
-    }
-}
+    # Get opernad information and filter all unsupported operand types (e.g., memory references)
+    try:
+        instr_info['source operands'] = convert_operands(instr[('dag', 'InOperandList')], data)
+        instr_info['destination operands'] = convert_operands(instr[('dag', 'OutOperandList')], data)
+    except ValueError as e:
+        print('skipped {} {}'.format(instr_name, e), file=sys.stderr)
+        continue
+    
+    # Parse Constraint string reduce number of variables
+    for c in instr[('string', 'Constraints')].split(','):
+        c = c.strip()
+        m = re.match(r'(?P<r1>\$[a-zA-Z0-9_]+)\s*=\s*(?P<r2>\$[a-zA-Z0-9_]+)', c)
+        if m:
+            d = m.groupdict()
+            rename_key(instr_info['source operands'], d['r1'], d['r2'])
+            rename_key(instr_info['destination operands'], d['r1'], d['r2'])
+            instr_info['asm string'] = instr_info['asm string'].replace(d['r1'], d['r2'])
+        elif c and not c.startswith('@earlyclobber'):
+            print('not machted:', c, m)
+    
+    instr_data[instr_name] = instr_info
 
-#op_types = set()
-#for v in data.values():
-#    ops = v.get(('dag', 'OutOperandList'), [None,])[1:] + \
-#          v.get(('dag', 'InOperandList'), [None,])[1:]
-#    for o in ops:
-#        op_types.add(o.split(':')[0])
-#print(op_types)
+pprint(instr_data)
+print(len(instr_data), 'relevant instructions found', file=sys.stderr)
+
+def build_operand(op_constraint, op_type):
+    if op_constraint == 'r':
+        return op.Register(op_type)
+    elif op_constraint == 'i':
+        return op.Immediate(op_type, '1')
+    else:
+        raise ValueError("unsupported llvm constraint")
+
+
+# Build op.Instruction
+instructions = []
+for instr_name, instr in instr_data.items():
+    # Build registers for source (in) and destination (out) operands
+    source_operands = []
+    try:
+        for so_name, so_type in instr['source operands'].items():
+            if len(so_type) != 1:
+                # FIXME which one to select?
+                pass
+            source_operands.append(build_operand(so_type[0][0], so_type[0][1]))
+        
+        destination_operand = None
+        if len(instr['destination operands']) < 1:
+            # FIXME use "uses" and "defines"
+            continue
+        elif len(instr['destination operands']) > 1:
+            raise ValueError("Multiple destination operands are not supported")
+        for do_name, do_type in instr['destination operands'].items():
+            if len(do_type) < 1:
+                continue
+            elif len(do_type) > 1:
+                # FIXME which one to select?
+                pass
+            if do_type[0][0] == 'r':
+                destination_operand = op.Register(do_type[0][1])
+            else:
+                raise ValueError('Destination operand is not a register')
+    except ValueError as e:
+        print("skipped", instr_name, str(e), file=sys.stderr)
+        continue
+    
+    # Build instruction string from asm string
+    instr_str = instr['asm string']
+    i = 0
+    for var_name in itertools.chain(instr['destination operands'], instr['source operands']):
+        instr_str = instr_str.replace(var_name, '${}'.format(i))
+        i += 1
+    
+    # Make Instruction object
+    instructions.append(op.Instruction(
+        instruction=instr_str,
+        destination_operand=destination_operand,
+        source_operands=source_operands))
+
+pprint(instructions)

@@ -15,6 +15,12 @@ class Operand:
     def get_constraint_char(self):
         raise NotImplementedError()
 
+    def __repr__(self):
+        return '{}({})'.format(
+            self.__class__.__name__,
+            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
+                       if not k.startswith('_')]))
+
 
 class Immediate(Operand):
     def __init__(self, llvm_type, value):
@@ -129,12 +135,6 @@ class Register(Operand):
             self._set_name(other._name)
         else:
             other._set_name(self.get_ir_repr())
-
-    def __repr__(self):
-        return '{}({})'.format(
-            self.__class__.__name__,
-            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
-                       if not k.startswith('_')]))
     
     def __eq__(self, other):
         return (self.llvm_type == other.llvm_type and

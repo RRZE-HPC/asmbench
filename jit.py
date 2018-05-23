@@ -803,7 +803,7 @@ if __name__ == '__main__':
         parallel=10,
         serial=1)
     
-    modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea base LAT')])
+    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea base LAT')])
     
     verbose = 2 if '-v' in sys.argv else 0
     for key, module in modules.items():
