@@ -122,10 +122,10 @@ class LoopBenchmark(Benchmark):
 
         # Compile loop carried dependencies
         lcd = []
-        srcs = uniquify(p1.get_destination_registers())
-        dsts = uniquify(p1.get_source_registers())
+        srcs = uniquify(self.root_synth.get_destination_registers())
+        dsts = uniquify(self.root_synth.get_source_registers())
+        matched = False
         for dst in dsts:
-            matched = False
             for src in srcs:
                 if src.llvm_type == dst.llvm_type:
                     lcd.append([dst, self.init_values[dst.get_ir_repr()], src])
@@ -133,8 +133,8 @@ class LoopBenchmark(Benchmark):
                     srcs.append(src)
                     matched = True
                     break
-            if not matched:
-                raise ValueError("Unable to match source to any destination.")
+        if not matched:
+            raise ValueError("Unable to match source to any destination.")
 
         code = ''
         for dst_reg, init_value, src_reg in lcd:
