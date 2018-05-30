@@ -79,31 +79,32 @@ class MemoryReference(Operand):
 
 class Register(Operand):
     # Persistent storage of register names
-    _REGISTER_NAMES_IN_USE = []
+    _REGISTER_NAMES_IN_USE = {}
+    
+    @classmethod
+    def reset(cls):
+        cls._REGISTER_NAMES_IN_USE = {}
     
     @staticmethod
     def match(source_registers, destination_registers):
-        matched = 0
+        matches = set()
+        unmatched = set()
         for src in source_registers:
+            matched = False
             for dst in destination_registers:
                 if src.llvm_type == dst.llvm_type:
                     destination_registers.remove(dst)
                     src.join(dst)
-                    matched += 1
-        return matched
+                    matches.add(src)
+                    matched = True
+            if not matched:
+                unmatched.add(src)
+        return matches, unmatched
     
     def __init__(self, llvm_type, constraint_char='r', name='reg'):
         self.llvm_type = llvm_type
         self.constraint_char = constraint_char
         assert len(name) > 0, "name needs to be at least of length 1."
-        self._name = name
-        self._named = False
-    
-    def get_ir_repr(self):
-        if self._named:
-            return '%"{}"'.format(self._name)
-        # Check if name is already in use and append integer
-        name = self._name
         if name in self._REGISTER_NAMES_IN_USE:
             i = 0
             name_test = name
@@ -111,39 +112,35 @@ class Register(Operand):
                 name_test = '{}.{}'.format(name, i)
                 i += 1
             name = name_test
-        self._set_name(name)
-        return '%"{}"'.format(name)
+        self._name = name
+        self._REGISTER_NAMES_IN_USE[self._name] = '%"{}"'.format(self._name)
     
-    def _set_name(self, name):
-        if self._named:
-            raise RuntimeError("Already named.")
-        else:
-            self._name = name
-            self._REGISTER_NAMES_IN_USE.append(name)
-            self._named = True
+    def get_ir_repr(self):
+        return self._REGISTER_NAMES_IN_USE[self._name]
+    
+    def set_to_constant(self, value):
+        self._REGISTER_NAMES_IN_USE[self._name] = value
     
     def get_constraint_char(self):
         return self.constraint_char
     
     def join(self, other):
-        if self._named and other._named and self._name == other._name:
+        assert self.llvm_type == other.llvm_type, "LLVM types do not match."
+        assert self.constraint_char == other.constraint_char, "Constraint chars do not match."
+        if self._name == other._name:
             # nothing to do, already joined or equal
             pass
-        elif self._named and not other._named:
-            other._set_name(self._name)
-        elif other._named and not self._named:
-            self._set_name(other._name)
         else:
-            other._set_name(self.get_ir_repr())
+            del self._REGISTER_NAMES_IN_USE[self._name]
+            self._name = other._name
     
     def __eq__(self, other):
         return (self.llvm_type == other.llvm_type and
                 self.constraint_char == other.constraint_char and
-                self._name == other._name and
-                self._named == other._named)
+                self._name == other._name)
     
     def __hash__(self):
-        return hash((self.llvm_type, self.constraint_char, self._name, self._named))
+        return hash((self.llvm_type, self.constraint_char, self._name))
 
 class Synthable:
     def __init__(self):
@@ -267,8 +264,8 @@ class Serialized(Synthable):
         last = None
         for s in self.synths:
             last_dests = last.get_source_registers() if last else []
-            matched = Register.match(s.get_source_registers(), last_dests)
-            if matched == 0 and last is not None:
+            matched, unmatched = Register.match(s.get_source_registers(), last_dests)
+            if not matched and last is not None:
                 raise ValueError("Could not find a type match to serialize {} to {}.".format(
                     last, self))
             code.append(s.build_ir())

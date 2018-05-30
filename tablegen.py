@@ -122,7 +122,7 @@ def evt_to_llvm_type(evt):
             'f64': 'double',
             'f80': 'x86_fp80',
             'f128': 'fp128',
-            'x86mmx': 'fp64',  # TODO
+            'x86mmx': 'double',  # TODO
             'iPTR': '*TODO'}
     # i32, i64
     if evt in map_:
@@ -171,6 +171,7 @@ def rename_key(d, k_old, k_new, error=False):
 reg_class_conv_map = {
     'FR64': ('x', 'double'),
     'FR32': ('x', 'float'),
+    'VR64': ('x', '<2 x float>'),
 }
 
 def convert_operands(operands, data):
@@ -220,6 +221,16 @@ def convert_operands(operands, data):
 
     return operands_dict
 
+
+def build_operand(op_constraint, op_type):
+    if op_constraint in ['r', 'x']:
+        return op.Register(op_type, op_constraint)
+    elif op_constraint == 'i':
+        return op.Immediate(op_type, '1')
+    else:
+        raise ValueError("unsupported llvm constraint")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Build benchmarks from TableGen output.')
     parser.add_argument('input', metavar='IN', type=argparse.FileType('r'), default=sys.stdin,
@@ -248,10 +259,29 @@ def main():
                 value = translate_to_py(g['value'], g['type'], l)
                 data[cur_def][(g['type'], g['name'])] = value
 
-    instr_data = collections.OrderedDict()
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    llvm.initialize_native_asmparser()
+    
+    init_value_by_llvm_type = {'i'+bits: '1' for bits in ['1', '8', '16', '32', '64']}
+    init_value_by_llvm_type.update({fp_type: '1.0' for fp_type in ['float', 'double', 'fp128']})
+    init_value_by_llvm_type.update(
+        {'<{} x {}>'.format(vec, t): '<'+', '.join([t+' '+v]*vec)+'>'
+         for t, v in init_value_by_llvm_type.items()
+         for vec in [2, 4, 8, 16, 32, 64]})
 
+    instr_data = collections.OrderedDict()
+    instructions = collections.OrderedDict()
+
+    run = False
     for instr_name, instr in data.items():
-        # Filter non-instruction and uninteresting ones
+        #if instr_name != 'VPCLMULQDQYrr' and not run:
+        #    continue
+        #else:
+        #    run = True
+
+        # Filter non-instruction and uninteresting or unsupported ones
         if ('dag', 'OutOperandList') not in instr:
             if args.verbosity > 0:
                 print('skipped', instr_name, 'due to missing OutOperandList', file=sys.stderr)
@@ -270,7 +300,11 @@ def main():
                 print('skipped', instr_name, 'due to hardcoded register in asm string:',
                       instr[('string', 'AsmString')], file=sys.stderr)
             continue
-        if any([p in ['HasTBM', 'Not64BitMode', 'HasMPX'] 
+        # TODO Automatically detext feature set
+        if any([p in ['HasTBM', 'Not64BitMode', 'HasMPX', 'HasSSE4A', 'HasGFNI', 'HasDQI', 'HasBWI',
+                      'HasAVX512', 'Has3DNow', 'HasSHA', 'HasVAES', 'HasVLX', 'HasERI', 'HasFMA4',
+                      'HasXOP', 'HasVBMI2', 'HasCDI', 'HasVNNI', 'HasVBMI', 'HasIFMA',
+                      'HasBITALG', 'HasVPOPCNTDQ'] 
                 for p in instr[('list<Predicate>', 'Predicates')].split(', ')]):
             if args.verbosity > 0:
                 print('skipped', instr_name, 'due to Not64BitMode', file=sys.stderr)
@@ -279,8 +313,14 @@ def main():
             if args.verbosity > 0:
                 print('skipped', instr_name, 'due to isCodeGenOnly = True', file=sys.stderr)
             continue
+        #if instr[('bit', 'isAsmParserOnly')]:
+        #    if args.verbosity > 0:
+        #        print('skipped', instr_name, 'due to isAsmParserOnly = True', file=sys.stderr)
+        #    continue
         # FIXME
-        if instr_name in ['CMPPDrri', 'CMPPSrri', 'CMPSDrr', 'CMPSSrr', 'VCMPPDYrri']:
+        if (instr_name in ['CMPPDrri', 'CMPPSrri', 'CMPSDrr', 'CMPSSrr', 'RDSSPD', 'RDSSPQ',
+                           'VMREAD64rr', 'VMWRITE64rr', 'VPCLMULQDQYrr']
+                or any([instr_name.startswith(p) for p in ['MMX_', 'VPCMP', 'VCMP']])):
             if args.verbosity > 0:
                 print('skipped', instr_name, 'due to blacklisted instrunction name:', instr_name,
                       file=sys.stderr)
@@ -330,37 +370,24 @@ def main():
     
         instr_data[instr_name] = instr_info
 
-    #pprint(instr_data)
-    print(len(instr_data), 'relevant instructions found', file=sys.stderr)
 
-    def build_operand(op_constraint, op_type):
-        if op_constraint in ['r', 'x']:
-            return op.Register(op_type, op_constraint)
-        elif op_constraint == 'i':
-            return op.Immediate(op_type, '1')
-        else:
-            raise ValueError("unsupported llvm constraint")
-
-
-    # Build op.Instruction
-    instructions = collections.OrderedDict()
-    for instr_name, instr in instr_data.items():
+        # Build op.Instruction
         # Build registers for source (in) and destination (out) operands
         source_operands = []
         try:
-            for so_name, so_type in instr['source operands'].items():
+            for so_name, so_type in instr_info['source operands'].items():
                 if len(so_type) != 1:
                     # FIXME which one to select?
                     pass
                 source_operands.append(build_operand(so_type[0][0], so_type[0][1]))
         
             destination_operand = None
-            if len(instr['destination operands']) < 1:
+            if len(instr_info['destination operands']) < 1:
                 # FIXME use "uses" and "defines"
                 continue
-            elif len(instr['destination operands']) > 1:
+            elif len(instr_info['destination operands']) > 1:
                 raise ValueError("Multiple destination operands are not supported")
-            for do_name, do_type in instr['destination operands'].items():
+            for do_name, do_type in instr_info['destination operands'].items():
                 if len(do_type) < 1:
                     continue
                 elif len(do_type) > 1:
@@ -373,61 +400,49 @@ def main():
         except ValueError as e:
             print("skipped", instr_name, str(e), file=sys.stderr)
             continue
-    
+        
         # Build instruction string from asm string
-        instr_str = instr['asm string']
-        i = 0
-        for var_name in itertools.chain(instr['destination operands'], instr['source operands']):
+        # Sorting by var_name length is necessary to not replace "$src" in "$src1"
+        instr_str = instr_info['asm string']
+        for i, var_name in sorted(enumerate(
+                itertools.chain(instr_info['destination operands'], instr_info['source operands'])),
+                key=lambda x: len(x[1]), reverse=True):
             instr_str = instr_str.replace(var_name, '${}'.format(i))
-            i += 1
-    
+        
         # Make Instruction object
-        instructions[instr_name] = op.Instruction(
+        instr_op = op.Instruction(
             instruction=instr_str,
             destination_operand=destination_operand,
             source_operands=source_operands)
-
-    print(len(instructions), 'instruction objects build.')
+        instructions[instr_name] = instr_op
+        
+        # Filter instructions that can not be serialized easily
+        if not any([so.llvm_type == instr_op.destination_operand.llvm_type and
+                    type(so) == type(instr_op.destination_operand)
+                    for so in instr_op.source_operands]):
+            # TODO take also "uses" and "defs" into account
+            continue
     
-    self_serializable_instructions = collections.OrderedDict(filter(
-        lambda ni: any([so.llvm_type == ni[1].destination_operand.llvm_type
-                        for so in ni[1].source_operands]),
-        instructions.items()))
-    # TODO take also "uses" and "defs" into account
-
-    print(len(self_serializable_instructions), 'serializable instructions.')
-    
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-    llvm.initialize_native_asmparser()
-    
-    init_value_by_llvm_type = {'i'+bits: '1' for bits in ['1', '8', '16', '32', '64']}
-    init_value_by_llvm_type.update({fp_type: '1.0' for fp_type in ['float', 'double', 'fp128']})
-    init_value_by_llvm_type.update(
-        {'<{} x {}>'.format(vec, t): '<'+', '.join([t+' '+v]*vec)+'>'
-         for t, v in init_value_by_llvm_type.items()
-         for vec in [2, 4, 8, 16, 32, 64]})
-    
-    for name, i in self_serializable_instructions.items():
-        s = op.Serialized([i])
+        s = op.Serialized([instr_op])
         s.build_ir()
         
-        print(name)
-        pprint(instr_data[name])
-        print(i)
-        print(s.build_ir())
+        print('{:>12} '.format(instr_name), end='')
+        sys.stdout.flush()
         
-        # FIXME choose init_value according to llvm_type
+        # Choose init_value according to llvm_type
         init_values = {r.get_ir_repr(): init_value_by_llvm_type[r.llvm_type]
                        for r in s.get_source_registers()}
         b = bench.IntegerLoopBenchmark(s, init_values)
-        print(b.build_ir())
+        #print(instr_name)
+        #pprint(instr_data[instr_name])
+        #print(i)
+        #print(s.build_ir())
+        #print(b.build_ir())
+        #print(b.get_assembly())
         r = b.build_and_execute(repeat=1)
-        print('{:>12} {:>5.2f} cy/It'.format(name, min(r['runtimes'])*r['frequency']/r['iterations']))
-    
-    from IPython import embed
-    embed()
+        print('{:>5.2f} cy/It'.format(min(r['runtimes'])*r['frequency']/r['iterations']))
+        
+        op.Register.reset()
 
 if __name__ == '__main__':
     main()

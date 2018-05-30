@@ -6,7 +6,7 @@ import textwrap
 import itertools
 import random
 import collections
-import pprint
+from pprint import pprint
 import math
 
 import llvmlite.binding as llvm
@@ -146,6 +146,16 @@ class LoopBenchmark(Benchmark):
                          dst_reg=dst_reg.get_ir_repr(),
                          init_value=init_value,
                          src_reg=src_reg.get_ir_repr())
+
+        # Add extra phi for constant values. Assuming LLVM will optimiz them "away"
+        for dst in dsts:
+            if dst not in [d for d,i,s in lcd]:
+                code += ('{dst_reg} = phi {llvm_type} [{init_value}, %"entry"], '
+                         '[{init_value}, %"loop"]\n').format(
+                             llvm_type=dst.llvm_type,
+                             dst_reg=dst.get_ir_repr(),
+                             init_value=self.init_values[dst.get_ir_repr()])
+
         return code
 
 
