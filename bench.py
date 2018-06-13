@@ -113,48 +113,61 @@ class Benchmark:
 class LoopBenchmark(Benchmark):
     def __init__(self, root_synth, init_values=None):
         self.root_synth = root_synth
-        self.init_values = init_values or {}
+        self.init_values = init_values or []
+
+        if len(root_synth.get_source_registers()) != len(self.init_values):
+            raise ValueError("Number of init values and source registers do not match.")
+
+    def get_source_names(self):
+        return ['%in.{}'.format(i) for i in range(len(self.root_synth.get_source_registers()))]
+
+    def get_destination_names(self):
+        return ['%out.{}'.format(i) for i in range(len(self.root_synth.get_destination_registers()))]
 
     def get_phi_code(self):
-        for k in self.root_synth.get_source_registers():
-            if k.get_ir_repr() not in self.init_values:
-                raise ValueError("Not all source registers have a an init value.")
 
         # Compile loop carried dependencies
         lcd = []
-        srcs = uniquify(self.root_synth.get_destination_registers())
-        dsts = uniquify(self.root_synth.get_source_registers())
+        # Change in naming (src <-> dst) is on purpose!
+        srcs = self.root_synth.get_destination_registers()
+        dsts = self.root_synth.get_source_registers()
+        srcs_it = itertools.cycle(enumerate(srcs))
         matched = False
-        for dst in dsts:
-            for src in srcs:
+        for dst_idx, dst in enumerate(dsts):
+            for src_idx, src in srcs_it:
                 if src.llvm_type == dst.llvm_type:
-                    lcd.append([dst, self.init_values[dst.get_ir_repr()], src])
-                    srcs.remove(src)
-                    srcs.append(src)
+                    lcd.append([dst,
+                                self.get_source_names()[dst_idx],
+                                self.init_values[dst_idx],
+                                src,
+                                self.get_destination_names()[src_idx]])
                     matched = True
+                    last_match_idx = src_idx
+                    break
+                if src_idx == last_match_idx:
                     break
         if not matched:
             raise ValueError("Unable to match source to any destination.")
 
         code = ''
-        for dst_reg, init_value, src_reg in lcd:
+        for dst_reg, dst_name, init_value, src_reg, src_name in lcd:
             assert dst_reg.llvm_type == src_reg.llvm_type, \
                 "Source and destination types do not match"
-            code += ('{dst_reg} = phi {llvm_type} [{init_value}, %"entry"], '
-                     '[{src_reg}, %"loop"]\n').format(
+            code += ('{dst_name} = phi {llvm_type} [{init_value}, %"entry"], '
+                     '[{src_name}, %"loop"]\n').format(
                          llvm_type=dst_reg.llvm_type,
-                         dst_reg=dst_reg.get_ir_repr(),
+                         dst_name=dst_name,
                          init_value=init_value,
-                         src_reg=src_reg.get_ir_repr())
+                         src_name=src_name)
 
         # Add extra phi for constant values. Assuming LLVM will optimiz them "away"
-        for dst in dsts:
-            if dst not in [d for d,i,s in lcd]:
+        for dst_idx, dst in enumerate(dsts):
+            if dst not in [d for d,dn,i,s,sn in lcd]:
                 code += ('{dst_reg} = phi {llvm_type} [{init_value}, %"entry"], '
                          '[{init_value}, %"loop"]\n').format(
                              llvm_type=dst.llvm_type,
-                             dst_reg=dst.get_ir_repr(),
-                             init_value=self.init_values[dst.get_ir_repr()])
+                             dst_reg=self.get_source_names()[dst_idx],
+                             init_value=self.init_values[dst_idx])
 
         return code
 
@@ -181,7 +194,9 @@ class IntegerLoopBenchmark(LoopBenchmark):
               ret i64 %"ret"
             }}
             ''').format(
-                loop_body=textwrap.indent(self.root_synth.build_ir(), '  '),
+                loop_body=textwrap.indent(
+                    self.root_synth.build_ir((self.get_destination_names(),
+                                              self.get_source_names())), '  '),
                 phi=textwrap.indent(self.get_phi_code(), '  '))
 
 
@@ -220,8 +235,7 @@ if __name__ == '__main__':
     s2 = op.Serialized([s1, i3])
     s3 = op.Serialized([i4, i5])
     p1 = op.Parallelized([i6, s2, s3])
-    p1.build_ir()
-    init_values = {r.get_ir_repr(): '1' for r in p1.get_source_registers()}
+    init_values = ['1' for r in p1.get_source_registers()]
     b = IntegerLoopBenchmark(p1, init_values)
     print(b.build_ir())
     print(b.build_and_execute())
