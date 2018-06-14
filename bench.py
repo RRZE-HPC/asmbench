@@ -55,7 +55,7 @@ class Benchmark:
             features=llvm.get_host_cpu_features().flatten()
             cpu=llvm.get_host_cpu_name()
             self._tm = llvm.Target.from_default_triple().create_target_machine(
-                cpu=cpu, features=features, opt=1)
+                cpu=cpu, features=features, opt=3)
         return self._tm
 
     def get_assembly(self):
@@ -131,9 +131,11 @@ class LoopBenchmark(Benchmark):
         # Change in naming (src <-> dst) is on purpose!
         srcs = self.root_synth.get_destination_registers()
         dsts = self.root_synth.get_source_registers()
+        # cycle iterator is used to not only reuse a single destination, but go through all of them
         srcs_it = itertools.cycle(enumerate(srcs))
         matched = False
         for dst_idx, dst in enumerate(dsts):
+            last_match_idx = len(srcs)-1
             for src_idx, src in srcs_it:
                 if src.llvm_type == dst.llvm_type:
                     lcd.append([dst,
@@ -144,6 +146,7 @@ class LoopBenchmark(Benchmark):
                     matched = True
                     last_match_idx = src_idx
                     break
+                # since srcs_it is an infinity iterator, we need to abort after a complete cycle
                 if src_idx == last_match_idx:
                     break
         if not matched:
@@ -195,9 +198,41 @@ class IntegerLoopBenchmark(LoopBenchmark):
             }}
             ''').format(
                 loop_body=textwrap.indent(
-                    self.root_synth.build_ir((self.get_destination_names(),
-                                              self.get_source_names())), '  '),
+                    self.root_synth.build_ir(self.get_destination_names(),
+                                             self.get_source_names()), '  '),
                 phi=textwrap.indent(self.get_phi_code(), '  '))
+
+
+init_value_by_llvm_type = {'i'+bits: '1' for bits in ['1', '8', '16', '32', '64']}
+init_value_by_llvm_type.update({fp_type: '1.0' for fp_type in ['float', 'double', 'fp128']})
+init_value_by_llvm_type.update(
+    {'<{} x {}>'.format(vec, t): '<'+', '.join([t+' '+v]*vec)+'>'
+     for t, v in init_value_by_llvm_type.items()
+     for vec in [2, 4, 8, 16, 32, 64]})
+
+
+def bench_instruction(instruction):
+    # Latency Benchmark
+    lat = float('inf')
+    for serial_factor in range(1, 16):
+        s = op.Serialized([instruction] * serial_factor)
+        init_values = [init_value_by_llvm_type[reg.llvm_type] for reg in s.get_source_registers()]
+        b = IntegerLoopBenchmark(s, init_values)
+        print(serial_factor)
+        print(b.build_ir())
+        print(b.get_assembly())
+        result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.3)
+        lat = min(lat, *[(t/serial_factor)*result['frequency']/result['iterations']
+                         for t in result['runtimes']])
+
+    # Throughput Benchmark
+    tp = 0
+
+    # Ports
+    ports = 0
+
+    # Result compilation
+    return lat, tp, ports
 
 
 if __name__ == '__main__':
@@ -209,28 +244,28 @@ if __name__ == '__main__':
     i1 = op.Instruction(
         instruction='add $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Immediate('i64', '1')])
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])
     i2 = op.Instruction(
         instruction='sub $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Immediate('i64', '1')])
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])
     s = op.Serialized([i1, i2])
     i3 = op.Instruction(
         instruction='add $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Register('i64', 'r')])
+        source_operands=[op.Register('i64', '0'), op.Register('i64', 'r')])
     i4 = op.Instruction(
         instruction='sub $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Immediate('i64', '23')])
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '23')])
     i5 = op.Instruction(
         instruction='add $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Immediate('i64', '23')])
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '23')])
     i6 = op.Instruction(
         instruction='add $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', 'r'), op.Register('i64', 'r')])
+        source_operands=[op.Register('i64', '0'), op.Register('i64', 'r')])
     s1 = op.Serialized([i1, i2])
     s2 = op.Serialized([s1, i3])
     s3 = op.Serialized([i4, i5])
@@ -238,7 +273,13 @@ if __name__ == '__main__':
     init_values = ['1' for r in p1.get_source_registers()]
     b = IntegerLoopBenchmark(p1, init_values)
     print(b.build_ir())
+    print(b.get_assembly())
     print(b.build_and_execute())
+
+    print(bench_instruction(op.Instruction(
+        instruction='add $2, $0',
+        destination_operand=op.Register('i64', 'r'),
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])))
     
     
     #if len(s.get_source_operand_types())

@@ -285,7 +285,8 @@ class InstructionBenchmark(Benchmark):
         # Build constraint string from operands
         constraints = ','.join(
             ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
-            [sop[0] for sop in itertools.chain(src_operands, dstsrc_operands)])
+            [sop[0] for sop in itertools.chain(src_operands)] +
+            ['{}'.format(i+len(dst_operands)) for i in range(len(dstsrc_operands))])
 
         for i, dstsrc_op in enumerate(dstsrc_operands):
             # Build instruction from instruction and operands

@@ -83,7 +83,7 @@ class Synthable:
     def __init__(self):
         pass
     
-    def build_ir(self, reg_naming, used_registers):
+    def build_ir(self, dst_reg_names, src_reg_names, used_registers):
         raise NotImplementedError()
     
     def get_source_registers(self):
@@ -133,7 +133,7 @@ class Instruction(Operation):
         else:
             return []
 
-    def build_ir(self, reg_naming, used_registers):
+    def build_ir(self, dst_reg_names, src_reg_names, used_registers):
         '''
         Build IR string based on in and out operand names and types.
         '''
@@ -153,7 +153,7 @@ class Instruction(Operation):
             elif isinstance(sop, Register):
                 operands.append('{type} {repr}'.format(
                     type=sop.llvm_type,
-                    repr=reg_naming[1][i]))
+                    repr=src_reg_names[i]))
                 i += 1
             else:
                 raise NotImplemente("Only register and immediate operands are supported.")
@@ -162,7 +162,7 @@ class Instruction(Operation):
         # Build instruction from instruction and operands
         return ('{dst_reg} = call {dst_type} asm sideeffect'
                 ' "{instruction}", "{constraints}" ({args})').format(
-                    dst_reg=reg_naming[0][0],
+                    dst_reg=dst_reg_names[0],
                     dst_type=self.destination_operand.llvm_type,
                     instruction=self.instruction,
                     constraints=constraints,
@@ -225,13 +225,13 @@ class Serialized(Synthable):
         
         return matched_pairs, unmatched_dests
 
-    def generate_register_naming(self, reg_naming, used_registers):
+    def generate_register_naming(self, dst_reg_names, src_reg_names, used_registers):
         reg_naming_out = []
         last_s = None
         for i, s in enumerate(self.synths):
             if i == 0:
                 # first source is passed in from outside
-                src_naming = reg_naming[1]
+                src_naming = src_reg_names
             else:
                 # match with previous destinations
                 src_naming = []
@@ -247,7 +247,7 @@ class Serialized(Synthable):
 
             if i == len(self.synths) - 1:
                 # last destination is passed in from outside
-                dst_naming = reg_naming[0]
+                dst_naming = dst_reg_names
             else:
                 dst_naming = [self._get_unused_reg_name(used_registers)
                               for j in s.get_destination_registers()]
@@ -256,13 +256,14 @@ class Serialized(Synthable):
             last_s = s
         return reg_naming_out, used_registers
 
-    def build_ir(self, reg_naming, used_registers=None):
+    def build_ir(self, dst_reg_names, src_reg_names, used_registers=None):
         if used_registers is None:
-            used_registers = set(reg_naming[0] + reg_naming[1])
-        reg_naming, used_registers = self.generate_register_naming(reg_naming, used_registers)
+            used_registers = set(dst_reg_names + src_reg_names)
+        reg_names, used_registers = self.generate_register_naming(
+            dst_reg_names, src_reg_names, used_registers)
         code = []
-        for s, r in zip(self.synths, reg_naming):
-            code.append(s.build_ir(r, used_registers))
+        for s, r in zip(self.synths, reg_names):
+            code.append(s.build_ir(*r, used_registers))
         return '\n'.join(code)
 
 
@@ -283,23 +284,24 @@ class Parallelized(Synthable):
             destinations += s.get_destination_registers()
         return destinations
 
-    def generate_register_naming(self, reg_naming, used_registers):
+    def generate_register_naming(self, dst_reg_names, src_reg_names, used_registers):
         # Split reg_naming among all synths
         reg_naming_out = []
         for s in self.synths:
             n_dsts = len(s.get_destination_registers())
             n_srcs = len(s.get_source_registers())
-            reg_naming_out.append((reg_naming[0][:n_dsts], reg_naming[1][:n_srcs]))
-            reg_naming = (reg_naming[0][n_dsts:], reg_naming[1][n_srcs:])
+            reg_naming_out.append((dst_reg_names[:n_dsts], src_reg_names[:n_srcs]))
+            dst_reg_names, src_reg_names = (dst_reg_names[n_dsts:], src_reg_names[n_srcs:])
         return reg_naming_out, used_registers
 
-    def build_ir(self, reg_naming, used_registers=None):
+    def build_ir(self, dst_reg_names, src_reg_names, used_registers=None):
         if used_registers is None:
-            used_registers = set(reg_naming[0] + reg_naming[1])
-        reg_naming, used_registers = self.generate_register_naming(reg_naming, used_registers)
+            used_registers = set(dst_reg_names + src_reg_names)
+        reg_names, used_registers = self.generate_register_naming(
+            dst_reg_names, src_reg_names, used_registers)
         code = []
-        for s, r in zip(self.synths, reg_naming):
-            code.append(s.build_ir(r, used_registers))
+        for s, r in zip(self.synths, reg_names):
+            code.append(s.build_ir(*r, used_registers))
         return '\n'.join(code)
 
 
@@ -330,11 +332,11 @@ if __name__ == '__main__':
         source_operands=[Register('i64', 'r')])
     s1 = Serialized([i1, i2])
     s2 = Serialized([s1, i3])
-    print(s1.build_ir((['%out'], ['%in'])), '\n')
-    print(s2.build_ir((['%out'], ['%in'])), '\n')
+    print(s1.build_ir(['%out'], ['%in']), '\n')
+    print(s2.build_ir(['%out'], ['%in']), '\n')
     s3 = Serialized([i4, i5])
     p1 = Parallelized([i6, s2, s3])
-    print(p1.build_ir((['%out.0', '%out.1', '%out.2'], ['%in.0', '%in.1', '%in.2'])), '\n')
+    print(p1.build_ir(['%out.0', '%out.1', '%out.2'], ['%in.0', '%in.1', '%in.2']), '\n')
 
     s4 = Serialized([i1, i2, i3, i4, i5, i6])
-    print(s4.build_ir((['%out'], ['%in'])), '\n')
+    print(s4.build_ir(['%out'], ['%in']), '\n')
