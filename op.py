@@ -160,7 +160,7 @@ class Instruction(Operation):
         args = ', '.join(operands)
         
         # Build instruction from instruction and operands
-        return ('{dst_reg} = call {dst_type} asm sideeffect'
+        return ('{dst_reg} = call {dst_type} asm '
                 ' "{instruction}", "{constraints}" ({args})').format(
                     dst_reg=dst_reg_names[0],
                     dst_type=self.destination_operand.llvm_type,

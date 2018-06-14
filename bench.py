@@ -213,20 +213,24 @@ init_value_by_llvm_type.update(
 
 def bench_instruction(instruction):
     # Latency Benchmark
-    lat = float('inf')
-    for serial_factor in range(1, 16):
-        s = op.Serialized([instruction] * serial_factor)
-        init_values = [init_value_by_llvm_type[reg.llvm_type] for reg in s.get_source_registers()]
-        b = IntegerLoopBenchmark(s, init_values)
-        print(serial_factor)
-        print(b.build_ir())
-        print(b.get_assembly())
-        result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.3)
-        lat = min(lat, *[(t/serial_factor)*result['frequency']/result['iterations']
-                         for t in result['runtimes']])
+    serial_factor = 8
+    s = op.Serialized([instruction] * serial_factor)
+    init_values = [init_value_by_llvm_type[reg.llvm_type] for reg in s.get_source_registers()]
+    b = IntegerLoopBenchmark(s, init_values)
+    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.3)
+    lat = min(*[(t/serial_factor)*result['frequency']/result['iterations']
+                for t in result['runtimes']])
 
     # Throughput Benchmark
-    tp = 0
+    parallel_factor = 7
+    serial_factor = 4
+    p = op.Parallelized([op.Serialized([instruction] * serial_factor)] * parallel_factor)
+    init_values = [init_value_by_llvm_type[reg.llvm_type] for reg in
+                   p.get_source_registers()]
+    b = IntegerLoopBenchmark(p, init_values)
+    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.3)
+    tp = min([(t/serial_factor/parallel_factor)*result['frequency']/result['iterations']
+                  for t in result['runtimes']])
 
     # Ports
     ports = 0

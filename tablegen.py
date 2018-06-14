@@ -223,6 +223,8 @@ def convert_operands(operands, data):
 
 
 def build_operand(op_constraint, op_type):
+    if re.match(r'[0-9]+', op_constraint):
+        return op.Register(op_type, op_constraint)
     if op_constraint in ['r', 'x']:
         return op.Register(op_type, op_constraint)
     elif op_constraint == 'i':
@@ -347,7 +349,7 @@ def main():
                 for vt in reg_data[('list<ValueType>', 'RegTypes')].split(', '):
                     llvm_types.append(evt_to_llvm_type(vt))
 
-        # Get opernad information and filter all unsupported operand types (e.g., memory references)
+        # Get operand information and filter all unsupported operand types (e.g., memory references)
         try:
             instr_info['source operands'] = convert_operands(instr[('dag', 'InOperandList')], data)
             instr_info['destination operands'] = convert_operands(instr[('dag', 'OutOperandList')], data)
@@ -374,14 +376,8 @@ def main():
         # Build op.Instruction
         # Build registers for source (in) and destination (out) operands
         source_operands = []
+        destination_operand = None
         try:
-            for so_name, so_type in instr_info['source operands'].items():
-                if len(so_type) != 1:
-                    # FIXME which one to select?
-                    pass
-                source_operands.append(build_operand(so_type[0][0], so_type[0][1]))
-        
-            destination_operand = None
             if len(instr_info['destination operands']) < 1:
                 # FIXME use "uses" and "defines"
                 continue
@@ -397,6 +393,22 @@ def main():
                     destination_operand = op.Register(do_type[0][1], do_type[0][0])
                 else:
                     raise ValueError('Destination operand is not a register')
+
+            for so_name, so_type in instr_info['source operands'].items():
+                if len(so_type) != 1:
+                    # FIXME which one to select?
+                    pass
+                if so_name in instr_info['destination operands']:
+                    # If this operand is both source AND destination, the source constraint string
+                    # needs to reference the destination
+                    if len(instr_info['destination operands']) > 1:
+                        raise ValueError("Multiple destination operands are not supported")
+                    # FIXME if multiple destinations are supported, the intere needs to match dst
+                    # order
+                    constraint = '0'
+                else:
+                    constraint = so_type[0][0]
+                source_operands.append(build_operand(constraint, so_type[0][1]))
         except ValueError as e:
             print("skipped", instr_name, str(e), file=sys.stderr)
             continue
@@ -422,27 +434,30 @@ def main():
                     for so in instr_op.source_operands]):
             # TODO take also "uses" and "defs" into account
             continue
-    
+
+        tp, lat, ports = bench.bench_instruction(instr_op)
+        print("{:>12} {:>5.2f} {:>5.2f}".format(instr_name, tp, lat))
+
+        continue
         s = op.Serialized([instr_op])
-        s.build_ir()
         
         print('{:>12} '.format(instr_name), end='')
         sys.stdout.flush()
         
         # Choose init_value according to llvm_type
-        init_values = {r.get_ir_repr(): init_value_by_llvm_type[r.llvm_type]
-                       for r in s.get_source_registers()}
+        init_values = [init_value_by_llvm_type[r.llvm_type]
+                       for r in s.get_source_registers()]
         b = bench.IntegerLoopBenchmark(s, init_values)
+        print()
         #print(instr_name)
-        #pprint(instr_data[instr_name])
+        pprint(instr_data[instr_name])
         #print(i)
-        #print(s.build_ir())
-        #print(b.build_ir())
-        #print(b.get_assembly())
+        print(b.build_ir())
+        print(b.get_assembly())
         r = b.build_and_execute(repeat=1)
         print('{:>5.2f} cy/It'.format(min(r['runtimes'])*r['frequency']/r['iterations']))
-        
-        op.Register.reset()
+
+        break
 
 if __name__ == '__main__':
     main()
