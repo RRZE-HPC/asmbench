@@ -125,7 +125,6 @@ class LoopBenchmark(Benchmark):
         return ['%out.{}'.format(i) for i in range(len(self.root_synth.get_destination_registers()))]
 
     def get_phi_code(self):
-
         # Compile loop carried dependencies
         lcd = []
         # Change in naming (src <-> dst) is on purpose!
@@ -222,8 +221,8 @@ def bench_instruction(instruction):
                 for t in result['runtimes']])
 
     # Throughput Benchmark
-    parallel_factor = 7
-    serial_factor = 4
+    parallel_factor = 8
+    serial_factor = 16
     p = op.Parallelized([op.Serialized([instruction] * serial_factor)] * parallel_factor)
     init_values = [init_value_by_llvm_type[reg.llvm_type] for reg in
                    p.get_source_registers()]
