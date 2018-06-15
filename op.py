@@ -15,7 +15,7 @@ class Operand:
         raise NotImplementedError()
 
     def __repr__(self):
-        return hex(id(self))+'{}({})'.format(
+        return '{}({})'.format(
             self.__class__.__name__,
             ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
                        if not k.startswith('_')]))
