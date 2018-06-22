@@ -215,19 +215,11 @@ def build_operand(op_constraint, op_type):
         raise ValueError("unsupported llvm constraint")
 
 
-# noinspection PyUnusedLocal
-def main():
-    parser = argparse.ArgumentParser(description='Build benchmarks from TableGen output.')
-    parser.add_argument('input', metavar='IN', type=argparse.FileType('r'), default=sys.stdin,
-                        help='Input file (default stdin)')
-    parser.add_argument("-v", "--verbosity", action="count", default=0,
-                        help="increase output verbosity")
-    args = parser.parse_args()
-
+def read_tablegen_output(f):
     data = collections.OrderedDict()
 
     cur_def = None
-    for l in args.input.readlines():
+    for l in f.readlines():
         if cur_def is None:
             m = re.match(r'^def (?P<name>[A-Za-z0-9_]+) {', l)
             if m:
@@ -243,69 +235,44 @@ def main():
                 # Handle value types
                 value = translate_to_py(g['value'], g['type'], l)
                 data[cur_def][(g['type'], g['name'])] = value
+    return data
 
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-    llvm.initialize_native_asmparser()
 
-    init_value_by_llvm_type = {'i' + bits: '1' for bits in ['1', '8', '16', '32', '64']}
-    init_value_by_llvm_type.update({fp_type: '1.0' for fp_type in ['float', 'double', 'fp128']})
-    init_value_by_llvm_type.update(
-        {'<{} x {}>'.format(vec, t): '<' + ', '.join([t + ' ' + v] * vec) + '>'
-         for t, v in init_value_by_llvm_type.items()
-         for vec in [2, 4, 8, 16, 32, 64]})
-
+def extract_instruction_information(data, verbosity=0):
     instr_data = collections.OrderedDict()
-    instructions = collections.OrderedDict()
 
     for instr_name, instr in data.items():
         # Filter non-instruction and uninteresting or unsupported ones
         if ('dag', 'OutOperandList') not in instr:
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped', instr_name, 'due to missing OutOperandList', file=sys.stderr)
             continue
         if not instr[('string', 'AsmString')]:
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped', instr_name, 'due to empty asm string', file=sys.stderr)
             continue
         if (instr[('string', 'AsmString')].startswith('#') or
                 re.match(r'^[A-Z]+', instr[('string', 'AsmString')])):
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped', instr_name, 'due to strange asm string:',
                       instr[('string', 'AsmString')],
                       file=sys.stderr)
             continue
         if '%' in instr[('string', 'AsmString')]:
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped', instr_name, 'due to hardcoded register in asm string:',
                       instr[('string', 'AsmString')], file=sys.stderr)
             continue
-        # TODO Automatically detext feature set
-        if any([p in ['HasTBM', 'Not64BitMode', 'HasMPX', 'HasSSE4A', 'HasGFNI', 'HasDQI', 'HasBWI',
-                      'HasAVX512', 'Has3DNow', 'HasSHA', 'HasVAES', 'HasVLX', 'HasERI', 'HasFMA4',
-                      'HasXOP', 'HasVBMI2', 'HasCDI', 'HasVNNI', 'HasVBMI', 'HasIFMA',
-                      'HasBITALG', 'HasVPOPCNTDQ']
-                for p in instr[('list<Predicate>', 'Predicates')].split(', ')]):
-            if args.verbosity > 0:
-                print('skipped', instr_name, 'due to Not64BitMode', file=sys.stderr)
-            continue
         if instr[('bit', 'isCodeGenOnly')]:
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped', instr_name, 'due to isCodeGenOnly = True', file=sys.stderr)
             continue
+
+        # TODO is this necessary?
         # if instr[('bit', 'isAsmParserOnly')]:
         #    if args.verbosity > 0:
         #        print('skipped', instr_name, 'due to isAsmParserOnly = True', file=sys.stderr)
         #    continue
-        # FIXME
-        if (instr_name in ['CMPPDrri', 'CMPPSrri', 'CMPSDrr', 'CMPSSrr', 'RDSSPD', 'RDSSPQ',
-                           'VMREAD64rr', 'VMWRITE64rr', 'VPCLMULQDQYrr']
-                or any([instr_name.startswith(p) for p in ['MMX_', 'VPCMP', 'VCMP']])):
-            if args.verbosity > 0:
-                print('skipped', instr_name, 'due to blacklisted instrunction name:', instr_name,
-                      file=sys.stderr)
-            continue
 
         # Build Instruction Info Dictionary
         instr_info = collections.OrderedDict(
@@ -313,7 +280,8 @@ def main():
              ('source operands', {}),
              ('destination operands', {}),
              ('uses', instr[('list<Register>', 'Uses')]),
-             ('defines', instr[('list<Register>', 'Defs')])])
+             ('defines', instr[('list<Register>', 'Defs')]),
+             ('predicates', instr[('list<Predicate>', 'Predicates')].split(', '))])
         operands = instr[('dag', 'OutOperandList')]
         for m in re.finditer(r'(?P<reg_class>[a-zA-Z0-9_]+):(?P<reg_name>\$[a-z0-9]+)', operands):
             d = m.groupdict()
@@ -334,7 +302,7 @@ def main():
             instr_info['destination operands'] = convert_operands(instr[('dag', 'OutOperandList')],
                                                                   data)
         except ValueError as e:
-            if args.verbosity > 0:
+            if verbosity > 0:
                 print('skipped {} {}'.format(instr_name, e), file=sys.stderr)
             continue
 
@@ -351,7 +319,40 @@ def main():
                 print('not machted:', c, m)
 
         instr_data[instr_name] = instr_info
+    return instr_data
 
+
+def filter_relevant_instructions(instruction_data, verbosity=0):
+    """
+    Return name of instructions that can be run on this architecture and do not have other issues
+    """
+    for instr_name, instr_info in instruction_data.items():
+        # TODO Automatically detext feature set
+        if any([p in ['HasTBM', 'Not64BitMode', 'HasMPX', 'HasSSE4A', 'HasGFNI', 'HasDQI', 'HasBWI',
+                      'HasAVX512', 'Has3DNow', 'HasSHA', 'HasVAES', 'HasVLX', 'HasERI', 'HasFMA4',
+                      'HasXOP', 'HasVBMI2', 'HasCDI', 'HasVNNI', 'HasVBMI', 'HasIFMA',
+                      'HasBITALG', 'HasVPOPCNTDQ']
+                for p in instr_info['predicates']]):
+            if verbosity > 0:
+                print('skipped', instr_name, 'due to Not64BitMode', file=sys.stderr)
+            continue
+        # FIXME
+        if (instr_name in ['CMPPDrri', 'CMPPSrri', 'CMPSDrr', 'CMPSSrr', 'RDSSPD', 'RDSSPQ',
+                           'VMREAD64rr', 'VMWRITE64rr', 'VPCLMULQDQYrr']
+                or any([instr_name.startswith(p) for p in ['MMX_', 'VPCMP', 'VCMP']])):
+            if verbosity > 0:
+                print('skipped', instr_name, 'due to blacklisted instrunction name:', instr_name,
+                      file=sys.stderr)
+            continue
+        yield instr_name
+
+
+def build_instruction_objects(instruction_data, instruction_names=None):
+    if instruction_names is None:
+        instruction_names = instruction_data.keys()
+
+    for instr_name in instruction_names:
+        instr_info = instruction_data[instr_name]
         # Build op.Instruction
         # Build registers for source (in) and destination (out) operands
         source_operands = []
@@ -410,38 +411,44 @@ def main():
         if not can_serialize(instr_op):
             continue
 
-        instructions[instr_name] = instr_op
+        yield (instr_name, instr_op)
 
-        # tp, lat = bench.bench_instruction(instr_op)
-        # print("{:>12} {:>5.2f} {:>5.2f}".format(instr_name, tp, lat))
+
+# noinspection PyUnusedLocal
+def main():
+    parser = argparse.ArgumentParser(description='Build benchmarks from TableGen output.')
+    parser.add_argument('input', metavar='IN', type=argparse.FileType('r'), default=sys.stdin,
+                        help='Input file (default stdin)')
+    parser.add_argument("-v", "--verbosity", action="count", default=0,
+                        help="increase output verbosity")
+    args = parser.parse_args()
+
+    data = read_tablegen_output(args.input)
+    instruction_data = extract_instruction_information(data, verbosity=args.verbosity)
+    rel_instruction_names = filter_relevant_instructions(instruction_data, verbosity=args.verbosity)
+    instructions = collections.OrderedDict(build_instruction_objects(
+            instruction_data, rel_instruction_names))
 
     if args.verbosity > 0:
         print('instructions:', len(instructions))
         print('2-combinations:', len(list(combined_instructions(instructions, 2))))
 
-    # Build subgroups for each return type
-    instructions_ret_type = collections.defaultdict(collections.OrderedDict)
-    for instr_name, instr_op in instructions.items():
-        instructions_ret_type[instr_op.get_destination_registers()[0].llvm_type][
-            instr_name] = instr_op
-
     if args.verbosity > 0:
         for ret_type, instrs in instructions_ret_type.items():
             print(ret_type, 'has', len(instrs), 'instructions')
 
-    # Constructing 10 random benchmarks:
-    for i in range(10):
-        serials = []
-        for t in instructions_ret_type:
-            serials.append(op.Serialized([random.choice(list(instructions_ret_type[t].values()))
-                                          for i in range(10)]))
-        p = op.Parallelized(serials)
+    # Setup LLVM environment
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    llvm.initialize_native_asmparser()
 
-        init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
-                       p.get_source_registers()]
-        b = bench.IntegerLoopBenchmark(p, init_values)
-        print(b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2))
+    # Benchmark TP and Lat for each instruction
+    # for instr_name, instr_op in instructions.items():
+    #     tp, lat = bench.bench_instruction(instr_op)
+    #     print("{:>12} {:>5.2f} {:>5.2f}".format(instr_name, tp, lat))
 
+    # Benchmark TP and Lat for all valid instruction pairs
     # for a,b in itertools.combinations(instructions, 2):
     #    ia = instructions[a]
     #    ib = instructions[b]
@@ -451,6 +458,25 @@ def main():
     #    print("{:>12} {:<12} ".format(a,b), end="")
     #    tp, lat = bench.bench_instructions([instructions[a], instructions[b]]#)
     #    print("{:>5.2f} {:>5.2f}".format(tp, lat))
+
+    # Benchmark random instruction sequences
+    # Build subgroups for each return type
+    instructions_ret_type = collections.defaultdict(collections.OrderedDict)
+    for instr_name, instr_op in instructions.items():
+        instructions_ret_type[instr_op.get_destination_registers()[0].llvm_type][
+            instr_name] = (instr_name, instr_op)
+    # Constructing random benchmarks, one for each return type
+    for t in instructions_ret_type:
+        selected_names, selected_instrs = zip(
+            *[random.choice(list(instructions_ret_type[t].values())) for i in range(10)])
+        serial = op.Serialized(selected_instrs)
+        p = op.Parallelized([serial] * 10)
+
+        init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
+                       p.get_source_registers()]
+        b = bench.IntegerLoopBenchmark(p, init_values)
+        print(selected_names)
+        print(b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2))
 
 
 def can_serialize(instr):

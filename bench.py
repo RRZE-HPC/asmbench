@@ -115,7 +115,7 @@ class Benchmark:
 
 class LoopBenchmark(Benchmark):
     def __init__(self, root_synth, init_values=None):
-        super().__init__(self)
+        super().__init__()
         self.root_synth = root_synth
         self.init_values = init_values or []
 
