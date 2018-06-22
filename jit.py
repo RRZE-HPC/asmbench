@@ -12,6 +12,7 @@ import math
 import llvmlite.binding as llvm
 import psutil
 
+
 # TODOs
 # * API to create test scenarios
 #   * DSL?
@@ -35,20 +36,20 @@ import psutil
 # * make sanity checks during runtime, check for fixed frequency and pinning
 
 def floor_harmonic_fraction(n, error=0.1):
-    '''
+    """
     Finds closest floored integer or inverse integer and returns error.
-    
+
     (numerator, denominator, relative error) where either numerator or denominator is exactly one.
-    '''
+    """
     floor_n = math.floor(n)
     if floor_n > 0:
-        return (floor_n, 1, 1 - floor_n/n)
+        return floor_n, 1, 1 - floor_n / n
     else:
         i = 2
-        while (1/i) > n:
+        while (1 / i) > n:
             i += 1
-        
-        return (1, i, 1 - (1/i)/n)
+
+        return 1, i, 1 - (1 / i) / n
 
 
 class Benchmark:
@@ -68,12 +69,12 @@ class Benchmark:
     def __repr__(self):
         return '{}({})'.format(
             self.__class__.__name__,
-            ', '.join(['{}={!r}'.format(k,v) for k,v in self.__dict__.items()
+            ', '.join(['{}={!r}'.format(k, v) for k, v in self.__dict__.items()
                        if not k.startswith('_')]))
 
     def get_ir(self):
         # FP add loop - may have issues
-        #return textwrap.dedent('''\
+        # return textwrap.dedent('''\
         #    define i64 @"test"(i64 %"N")
         #    {{
         #    entry:
@@ -114,37 +115,37 @@ class Benchmark:
               ret i64 %"ret"
             }}
             ''').format(
-                loop_body=textwrap.indent(self._loop_body, '  '))
+            loop_body=textwrap.indent(self._loop_body, '  '))
 
     def prepare_arguments(self, previous_args=None, time_factor=1.0):
-        '''Build argument tuple, to be passed to low level function.'''
+        """Build argument tuple, to be passed to low level function."""
         if previous_args is None:
-            return (100,)
+            return 100,
         else:
-            return (int(previous_args[0]*time_factor),)
-    
+            return int(previous_args[0] * time_factor),
+
     def get_iterations(self, args):
-        '''Return number of iterations performed, based on lower level function arguments.'''
+        """Return number of iterations performed, based on lower level function arguments."""
         return args[0]
 
     def get_llvm_module(self):
-        '''Build and return LLVM module from LLVM IR code.'''
+        """Build and return LLVM module from LLVM IR code."""
         if not hasattr(self, '_llvm_module'):
             self._llvm_module = llvm.parse_assembly(self.get_ir())
             self._llvm_module.verify()
         return self._llvm_module
 
     def get_target_machine(self):
-        '''Instantiate and return target machine.'''
+        """Instantiate and return target machine."""
         if not hasattr(self, '_llvm_module'):
-            features=llvm.get_host_cpu_features().flatten()
-            cpu=llvm.get_host_cpu_name()
+            features = llvm.get_host_cpu_features().flatten()
+            cpu = llvm.get_host_cpu_name()
             self._tm = llvm.Target.from_default_triple().create_target_machine(
                 cpu=cpu, features=features, opt=1)
         return self._tm
 
     def get_assembly(self):
-        '''Compile and return assembly from LLVM module.'''
+        """Compile and return assembly from LLVM module."""
         tm = self.get_target_machine()
         tm.set_asm_verbosity(0)
         return tm.emit_assembly(self.get_llvm_module())
@@ -174,9 +175,9 @@ class Benchmark:
                     start = time.perf_counter()
                     res = cfunc(*args)
                     end = time.perf_counter()
-                    elapsed = end-start
+                    elapsed = end - start
                     if not fixed_args and (elapsed < min_elapsed or elapsed > max_elapsed):
-                        target_elapsed = 2/3*min_elapsed+1/3*max_elapsed
+                        target_elapsed = 2 / 3 * min_elapsed + 1 / 3 * max_elapsed
                         factor = target_elapsed / elapsed
                         args = self.prepare_arguments(previous_args=args, time_factor=factor)
                         continue
@@ -184,42 +185,42 @@ class Benchmark:
                         # After we have the right argument choice, we keep it.
                         fixed_args = True
                         break
-                        
-                
+
                 runtimes.append(elapsed)
 
         return {'iterations': self.get_iterations(args),
                 'arguments': args,
                 'runtimes': runtimes,
-                'frequency': psutil.cpu_freq().current*1e6}
+                'frequency': psutil.cpu_freq().current * 1e6}
 
     @classmethod
     def get_latency(cls, max_serial=6, print_table=False, **kwargs):
         if print_table:
-            print(' s |'+''.join([' {:^5}'.format(i) for i in range(1, max_serial)]))
+            print(' s |' + ''.join([' {:^5}'.format(i) for i in range(1, max_serial)]))
             print('   | ', end='')
         serial_runs = []
         for s in range(1, max_serial):
             m = cls(serial=s, parallel=1, **kwargs)
             r = m.build_and_execute(repeat=1)
-            cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*m.parallel*m.serial)
+            cy_per_it = min(r['runtimes']) * r['frequency'] / (
+                        r['iterations'] * m.parallel * m.serial)
             if print_table:
                 print('{:.3f} '.format(cy_per_it), end='')
             sys.stdout.flush()
-            
+
             serial_runs.append((cy_per_it, floor_harmonic_fraction(cy_per_it), m))
-        
+
         if print_table:
             print()
             print('LAT: {lat[0]}/{lat[1]}cy (min. error {lat[2]:.1%})'.format(
-            lat=min(serial_runs)[1]))
-        
+                lat=min(serial_runs)[1]))
+
         return min(serial_runs)[1]
-    
+
     @classmethod
     def get_throughput(cls, max_serial=6, max_parallel=17, print_table=False, **kwargs):
         if print_table:
-            print('s\p |'+''.join([' {:^5}'.format(i) for i in range(2, max_parallel)]))
+            print('s\p |' + ''.join([' {:^5}'.format(i) for i in range(2, max_parallel)]))
         parallel_runs = []
         for s in range(1, max_serial):
             if print_table:
@@ -227,35 +228,36 @@ class Benchmark:
             for p in range(2, max_parallel):
                 m = cls(serial=s, parallel=p, **kwargs)
                 r = m.build_and_execute(repeat=1)
-                cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*m.parallel*m.serial)
+                cy_per_it = min(r['runtimes']) * r['frequency'] / (
+                            r['iterations'] * m.parallel * m.serial)
                 if print_table:
                     print('{:.3f} '.format(cy_per_it), end='')
                 sys.stdout.flush()
                 parallel_runs.append((cy_per_it, floor_harmonic_fraction(cy_per_it), m))
             if print_table:
                 print()
-        
+
         if print_table:
             print('TP: {tp[0]}/{tp[1]}cy (min. error {tp[2]:.1%});'.format(
-            tp=min(parallel_runs)[1]))
-        
+                tp=min(parallel_runs)[1]))
+
         return min(parallel_runs)[1]
 
 
 class InstructionBenchmark(Benchmark):
     def __init__(self, instruction='addq $1, $0',
                  dst_operands=(),
-                 dstsrc_operands=(('r','i64', '0'),),
-                 src_operands=(('i','i64', '1'),),
+                 dstsrc_operands=(('r', 'i64', '0'),),
+                 src_operands=(('i', 'i64', '1'),),
                  parallel=10,
                  serial=4):
-        '''
+        """
         Build LLVM IR for arithmetic instruction benchmark without memory references.
 
         Currently only one destination (dst) or combined destination and source (dstsrc) operand
         is allowed. Only instruction's operands ($N) refer to the order of opernads found in
         dst + dstsrc + src.
-        '''
+        """
         Benchmark.__init__(self, parallel=parallel, serial=serial)
         self.instruction = instruction
         self.dst_operands = dst_operands
@@ -277,16 +279,16 @@ class InstructionBenchmark(Benchmark):
                     self._loop_body += (
                         '%"dstsrc{index}_{p}" = phi {type} '
                         '[{initial}, %"entry"], [%"dstsrc{index}_{p}.out", %"loop"]\n').format(
-                            index=i, type=dstsrc_op[1], initial=dstsrc_op[2], p=p)
+                        index=i, type=dstsrc_op[1], initial=dstsrc_op[2], p=p)
             else:
                 raise NotImplemented("Operand type in {!r} is not yet supported.".format(dstsrc_op))
 
         # Part 2: Inline ASM call
         # Build constraint string from operands
         constraints = ','.join(
-            ['='+dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
+            ['=' + dop[0] for dop in itertools.chain(dst_operands, dstsrc_operands)] +
             [sop[0] for sop in itertools.chain(src_operands)] +
-            ['{}'.format(i+len(dst_operands)) for i in range(len(dstsrc_operands))])
+            ['{}'.format(i + len(dst_operands)) for i in range(len(dstsrc_operands))])
 
         for i, dstsrc_op in enumerate(dstsrc_operands):
             # Build instruction from instruction and operands
@@ -294,19 +296,19 @@ class InstructionBenchmark(Benchmark):
             # TODO support dst and dstsrc operands at the same time
             for p in range(self.parallel):
                 operands = ['{type} {val}'.format(type=sop[1], val=sop[2]) for sop in src_operands]
-                for i, dop in enumerate(dstsrc_operands):
-                    operands.append('{type} %dstsrc{index}_{p}'.format(type=dop[1], index=i, p=p))
+                for j, dop in enumerate(dstsrc_operands):
+                    operands.append('{type} %dstsrc{index}_{p}'.format(type=dop[1], index=j, p=p))
                 args = ', '.join(operands)
 
                 self._loop_body += (
                     '%"dstsrc{index}_{p}.out" = call {dst_type} asm sideeffect'
                     ' "{instruction}", "{constraints}" ({args})\n').format(
-                        index=i,
-                        dst_type=dstsrc_op[1],
-                        instruction='\n'.join([instruction]*self.serial),
-                        constraints=constraints,
-                        args=args,
-                        p=p)
+                    index=i,
+                    dst_type=dstsrc_op[1],
+                    instruction='\n'.join([instruction] * self.serial),
+                    constraints=constraints,
+                    args=args,
+                    p=p)
 
         for i, dst_op in enumerate(dst_operands):
             # Build instruction from instruction and operands
@@ -321,12 +323,12 @@ class InstructionBenchmark(Benchmark):
                 self._loop_body += (
                     '%"dst{index}_{p}.out" = call {dst_type} asm sideeffect'
                     ' "{instruction}", "{constraints}" ({args})\n').format(
-                        index=i,
-                        dst_type=dst_op[1],
-                        instruction=instruction,
-                        constraints=constraints,
-                        args=args,
-                        p=p)
+                    index=i,
+                    dst_type=dst_op[1],
+                    instruction=instruction,
+                    constraints=constraints,
+                    args=args,
+                    p=p)
 
 
 class AddressGenerationBenchmark(Benchmark):
@@ -338,7 +340,7 @@ class AddressGenerationBenchmark(Benchmark):
                  destination='base',
                  parallel=10,
                  serial=4):
-        '''
+        """
         Benchmark for address generation modes.
 
         Arguments may be None or (arg_type, reg_type, initial_value), with arg_type 'r' (register)
@@ -359,7 +361,7 @@ class AddressGenerationBenchmark(Benchmark):
         base: register
         index: register
         width: immediate 1,2,4 or 8
-        '''
+        """
         Benchmark.__init__(self, parallel=parallel, serial=serial)
         self.offset = offset
         self.base = base
@@ -371,7 +373,7 @@ class AddressGenerationBenchmark(Benchmark):
         if bool(index) ^ bool(width):
             raise ValueError("Index and width both need to be set, or be None.")
         elif index and width:
-            if width[0] != 'i' or int(width[2]) not in [1,2,4,8]:
+            if width[0] != 'i' or int(width[2]) not in [1, 2, 4, 8]:
                 raise ValueError("Width may only be immediate 1,2,4 or 8.")
             if index[0] != 'r':
                 raise ValueError("Index must be a register.")
@@ -393,7 +395,7 @@ class AddressGenerationBenchmark(Benchmark):
 
         if not base and not index:
             raise ValueError("Either base or index must be set for latency test to work.")
-        
+
         if serial != 1 and not (base or index):
             raise ValueError("Serial > 1 only works with index and/or base in use.")
 
@@ -427,8 +429,8 @@ class AddressGenerationBenchmark(Benchmark):
             self._loop_body += (
                 '%"{name}_{p}.0" = '
                 'phi {type} [{initial}, %"entry"], [%"{name}_{p}.{s}", %"loop"]\n').format(
-                    name=destination, type=destination_reg[1], initial=destination_reg[2], p=p,
-                    s=self.serial)
+                name=destination, type=destination_reg[1], initial=destination_reg[2], p=p,
+                s=self.serial)
 
         for p in range(parallel):
             for s in range(self.serial):
@@ -440,33 +442,33 @@ class AddressGenerationBenchmark(Benchmark):
                             base_type=base[1], base_name=destination,
                             index_type=index[1], index_value=index[2], p=p, s_in=s)
                     else:  # destination == 'index':
-                        args ='{base_type} {base_value}, {index_type} %"{index_name}_{p}.{s_in}"'.format(
+                        args = '{base_type} {base_value}, {index_type} %"{index_name}_{p}.{s_in}"'.format(
                             base_type=base[1], base_value=base[2],
                             index_type=index[1], index_name=destination, p=p, s_in=s)
                 else:
                     args = '{type} %"{name}_{p}.{s_in}"'.format(
                         type=destination_reg[1], name=destination, p=p, s_in=s)
-            
+
                 self._loop_body += (
                     '%"{name}_{p}.{s_out}" = call {type} asm sideeffect'
                     ' "lea {ops}", "{constraints}" ({args})\n').format(
-                        name=destination,
-                        type=destination_reg[1],
-                        ops=ops,
-                        constraints=constraints,
-                        args=args,
-                        p=p,
-                        s_out=s+1)
+                    name=destination,
+                    type=destination_reg[1],
+                    ops=ops,
+                    constraints=constraints,
+                    args=args,
+                    p=p,
+                    s_out=s + 1)
 
 
 class LoadBenchmark(Benchmark):
     def __init__(self, chain_length=2048, structure='linear', parallel=6, serial=4):
-        '''
+        """
         Benchmark for L1 load using pointer chasing.
 
         *chain_length* is the number of pointers to place in memory.
         *structure* may be 'linear' (1-offsets) or 'random'.
-        '''
+        """
         Benchmark.__init__(self, parallel=parallel, serial=serial)
         self._loop_body = ''
         element_type = ctypes.POINTER(ctypes.c_int)
@@ -486,31 +488,31 @@ class LoadBenchmark(Benchmark):
         if structure == 'linear':
             for i in range(chain_length):
                 self._pointer_field[i] = ctypes.cast(
-                    ctypes.pointer(self._pointer_field[(i+1)%chain_length]), element_type)
+                    ctypes.pointer(self._pointer_field[(i + 1) % chain_length]), element_type)
         elif structure == 'random':
             shuffled_indices = list(range(chain_length))
             random.shuffle(shuffled_indices)
             for i in range(chain_length):
                 self._pointer_field[shuffled_indices[i]] = ctypes.cast(
-                    ctypes.pointer(self._pointer_field[shuffled_indices[(i+1)%chain_length]]),
+                    ctypes.pointer(self._pointer_field[shuffled_indices[(i + 1) % chain_length]]),
                     element_type)
         else:
             raise ValueError("Given structure is not supported. Supported are: "
                              "linear and random.")
 
     def prepare_arguments(self, previous_args=None, time_factor=1.0):
-        '''Build argument tuple, to be passed to low level function.'''
+        """Build argument tuple, to be passed to low level function."""
         if previous_args is None:
-            return (self._pointer_field, 100)
+            return self._pointer_field, 100
         else:
-            return (previous_args[0], int(previous_args[1]*time_factor))
-    
+            return previous_args[0], int(previous_args[1] * time_factor)
+
     def get_iterations(self, args):
-        '''Return number of iterations performed, based on lower level function arguments.'''
-        return self.chain_length*args[1]
+        """Return number of iterations performed, based on lower level function arguments."""
+        return self.chain_length * args[1]
 
     def get_ir(self):
-        '''
+        """
         Return LLVM IR equivalent of (in case of parallel == 1 and serial == 1):
 
         int test(int** ptrf, int repeat) {
@@ -525,7 +527,7 @@ class LoadBenchmark(Benchmark):
             }
             return i;
         }
-        '''
+        """
         ret = textwrap.dedent('''
         define i32 @test(i32** %"ptrf_0", i32 %"repeats") {
         entry:
@@ -554,25 +556,25 @@ class LoadBenchmark(Benchmark):
         for p in range(self.parallel):
             ret += ('  %"p_{p}.0" = phi i32** '
                     '[ %"p0_{p}", %"loop1" ], [ %"p_{p}.{s_max}", %"loop2" ]\n').format(
-                        p=p, s_max=self.serial)
-        
+                p=p, s_max=self.serial)
+
         # load p, compare to p0 and or-combine results
         for p in range(self.parallel):
             for s in range(self.serial):
                 ret += ('  %"pp_{p}.{s}" = bitcast i32** %"p_{p}.{s_prev}" to i32***\n'
                         '  %"p_{p}.{s}" = load i32**, i32*** %"pp_{p}.{s}", align 8\n').format(
-                            p=p, s=s+1, s_prev=s)
+                    p=p, s=s + 1, s_prev=s)
 
             # Compare is needed for all registers, for llvm not to remove unused 
             # instructions:
             ret += '  %"cmp_{p}.loop2" = icmp eq i32** %"p_{p}.{s_max}", %"p0_{p}"\n'.format(
                 p=p, s_max=self.serial)
-        
+
         # TODO tree reduce cmp to make use of all cmp_* values
 
         # It is sufficient to use only one compare, all others will be eliminated
         ret += '  br i1 %"cmp_0.loop2", label %"loop3", label %"loop2"\n'
-        
+
         ret += textwrap.dedent('''
         loop3:
             %"i.1" = add i32 %"i", 1
@@ -584,6 +586,7 @@ class LoadBenchmark(Benchmark):
             ret i32 %"ret"
         }''')
         return ret
+
 
 if __name__ == '__main__':
     llvm.initialize()
@@ -597,8 +600,8 @@ if __name__ == '__main__':
     modules['add i64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('i', 'i64', '1'),),
         parallel=1,
         serial=5)
 
@@ -606,8 +609,8 @@ if __name__ == '__main__':
     modules['add r64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('r','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('r', 'i64', '1'),),
         parallel=1,
         serial=5)
 
@@ -615,8 +618,8 @@ if __name__ == '__main__':
     modules['4xadd i64 r64 LAT'] = InstructionBenchmark(
         instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('i', 'i64', '1'),),
         parallel=1,
         serial=5)
 
@@ -624,8 +627,8 @@ if __name__ == '__main__':
     modules['add i64 r64 TP'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('i', 'i64', '1'),),
         parallel=10,
         serial=5)
 
@@ -633,8 +636,8 @@ if __name__ == '__main__':
     modules['add r64 r64 TP'] = InstructionBenchmark(
         instruction='addq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('r','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('r', 'i64', '1'),),
         parallel=10,
         serial=5)
 
@@ -642,8 +645,8 @@ if __name__ == '__main__':
     modules['4xadd i64 r64 TP'] = InstructionBenchmark(
         instruction='addq $1, $0\naddq $1, $0\naddq $1, $0\naddq $1, $0',
         dst_operands=(),
-        dstsrc_operands=(('r','i64', '0'),),
-        src_operands=(('i','i64', '1'),),
+        dstsrc_operands=(('r', 'i64', '0'),),
+        src_operands=(('i', 'i64', '1'),),
         parallel=10,
         serial=1)
 
@@ -673,7 +676,7 @@ if __name__ == '__main__':
         destination='index',
         parallel=1,
         serial=5)
-    
+
     modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
         base=None,
@@ -782,30 +785,30 @@ if __name__ == '__main__':
     modules['vaddpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
         instruction='vaddpd $1, $0, $0',
         dst_operands=(),
-        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
+        src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=1,
         serial=5)
-    
+
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) LAT'] = InstructionBenchmark(
         instruction='vmulpd $1, $0, $0',
         dst_operands=(),
-        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
+        src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=1,
         serial=5)
-    
+
     # This is actually a TP benchmark with parallel=1, because there are no inter-loop depencies:
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) TP'] = InstructionBenchmark(
         instruction='vmulpd $1, $2, $0',
         dst_operands=(),
-        dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
-        src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),),
+        dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
+        src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=10,
         serial=1)
-    
-    #modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea base LAT')])
-    
+
+    # modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('lea base LAT')])
+
     verbose = 2 if '-v' in sys.argv else 0
     for key, module in modules.items():
         if verbose > 0:
@@ -819,22 +822,23 @@ if __name__ == '__main__':
         if verbose > 0:
             print("=== Result")
             pprint.pprint(r)
-    
-        cy_per_it = min(r['runtimes'])*r['frequency']/(r['iterations']*module.parallel*module.serial)
+
+        cy_per_it = min(r['runtimes']) * r['frequency'] / (
+                    r['iterations'] * module.parallel * module.serial)
         print('{key:<32} {cy_per_it:.3f} cy/It with {runtime_sum:.4f}s'.format(
             key=key,
             module=module,
             cy_per_it=cy_per_it,
             runtime_sum=sum(r['runtimes'])))
-    
-    #InstructionBenchmark.get_latency(
+
+    # InstructionBenchmark.get_latency(
     #    instruction='vmulpd $1, $0, $0',
     #    dst_operands=(),
     #    dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
     #    src_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10']*4))),
     #                  ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
     #    print_table=True)
-    #InstructionBenchmark.get_throughput(
+    # InstructionBenchmark.get_throughput(
     #    instruction='vmulpd $1, $0, $0',
     #    dst_operands=(),
     #    dstsrc_operands=(('x','<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10']*4))),),
@@ -842,13 +846,13 @@ if __name__ == '__main__':
     #                  ('x','<4 x double>', '<{}>'.format(', '.join(['double 2.13e-10']*4))),),
     #    print_table=True)
     #
-    #InstructionBenchmark.get_latency(
+    # InstructionBenchmark.get_latency(
     #    instruction='nop',
     #    dst_operands=(),
     #    dstsrc_operands=(('r','i8', '0'),),
     #    src_operands=(),
     #    print_table=True)
-    #InstructionBenchmark.get_throughput(
+    # InstructionBenchmark.get_throughput(
     #    instruction='nop',
     #    dst_operands=(),
     #    dstsrc_operands=(('r','i8', '0'),),
