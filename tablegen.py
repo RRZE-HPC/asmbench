@@ -3,15 +3,13 @@
 import sys
 import collections
 import re
-from pprint import pprint
 import itertools
 import argparse
 import random
 
 import llvmlite.binding as llvm
 
-import op
-import bench
+from asmjit import op, bench
 
 
 def split_list(raw):
@@ -434,7 +432,7 @@ def main():
         print('2-combinations:', len(list(combined_instructions(instructions, 2))))
 
     if args.verbosity > 0:
-        for ret_type, instrs in instructions_ret_type.items():
+        for ret_type, instrs in rel_instruction_names.items():
             print(ret_type, 'has', len(instrs), 'instructions')
 
     # Setup LLVM environment
@@ -453,11 +451,18 @@ def main():
     #    ia = instructions[a]
     #    ib = instructions[b]
     #    if not (can_serialize(ia) and can_serialize(ib) and
-    #            ia.get_destination_registers()[0].llvm_type == ib.get_destination_registers()[0].llvm_type):
+    #            ia.get_destination_registers()[0].llvm_type
+    #            == ib.get_destination_registers()[0].llvm_type):
     #        continue
     #    print("{:>12} {:<12} ".format(a,b), end="")
     #    tp, lat = bench.bench_instructions([instructions[a], instructions[b]]#)
     #    print("{:>5.2f} {:>5.2f}".format(tp, lat))
+
+    for n in ['ADD32ri', 'ADD64ri', 'CMP32rm', 'CMP32rr', 'CMP64ri', 'CMP64rr', 'INC64r', 'MOVSX64rm32', 'SUB32ri', 'VADDPDYrm', 'VADDSDrm', 'VADDSDrr', 'VADDSSrr', 'VCVTSI642SSrr_Int', 'VCVTSS2SIrr_Int', 'VFMADD213PDYr', 'VFMADD213PDr', 'VFMADD213PSYr', 'VFMADD213PSr', 'VFMADD213SDr', 'VFMADD213SSr', 'VINSERTF128rr', 'VMULPDYrr', 'VMULSDrm_Int', 'VMULSDrr_Int', 'VMULSSrr_Int', 'VSUBPDYrm', 'VSUBSDrm_Int', 'VSUBSDrr_Int', 'VSUBSSrr_Int']:
+        if n not in instructions and n.replace('m', 'r') not in instructions:
+            print("NOT FOUND", n, "please investigate")
+
+    return
 
     # Benchmark random instruction sequences
     # Build subgroups for each return type

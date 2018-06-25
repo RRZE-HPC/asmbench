@@ -83,6 +83,15 @@ class Register(Operand):
     def get_constraint_char(self):
         return self.constraint_char
 
+    @classmethod
+    def from_string(cls, s):
+        """
+        Create Register object from string.
+
+        :param s: must have the form: "llvm_type:constraint_char"
+        """
+        return cls(*s.split(':', 1))
+
 
 class Synthable:
     def __init__(self):
@@ -175,6 +184,42 @@ class Instruction(Operation):
             instruction=self.instruction,
             constraints=constraints,
             args=args)
+
+    @classmethod
+    def from_string(cls, s):
+        """
+        Create Instruction object from string.
+
+        :param s: must have the form:
+                  "asm_instruction_name ( (src|dst|srcdst):llvm_type:constraint_char)+"
+        """
+        instruction, operands = s.split(maxsplit=1)
+        dst_ops = []
+        src_ops = []
+        src_index = list(['dst' in o.split()[0] for o in operands.split()]).count(True)
+        dst_index = 0
+        for o in operands.split():
+            direction, reg_options = o.split(':', maxsplit=1)
+            r = Register.from_string(reg_options)
+            valid = False
+            if 'src' in direction and not 'dst' in direction:
+                valid = True
+                src_ops.append(r)
+                instruction += " ${}".format(src_index)
+                src_index += 1
+            if 'dst' in direction:
+                valid = True
+                dst_ops.append(r)
+                instruction += " ${}".format(dst_index)
+                if 'src' in direction:
+                    src_ops.append(Register(reg_options.split(':', 1)[0], str(dst_index)))
+                dst_index += 1
+            if not valid:
+                raise ValueError("Invalid direction '{}', may only be src, dst or srcdst.".format(
+                    direction))
+        assert len(dst_ops) == 1, "Instruction supports only single destinations."
+        return cls(instruction, dst_ops[0], src_ops)
+
 
 
 class Load(Operation):
@@ -358,3 +403,5 @@ if __name__ == '__main__':
 
     s4 = Serialized([i1, i2, i3, i4, i5, i6])
     print(s4.build_ir(['%out'], ['%in']), '\n')
+
+    print(Instruction.from_string("add src:i64:r srcdst:i64:r"))

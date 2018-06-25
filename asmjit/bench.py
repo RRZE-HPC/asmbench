@@ -7,7 +7,7 @@ import itertools
 import llvmlite.binding as llvm
 import psutil
 
-import op
+from asmjit import op
 
 
 def uniquify(l):
