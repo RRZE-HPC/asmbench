@@ -3,11 +3,20 @@ import ctypes
 import time
 import textwrap
 import itertools
+import re
+from pprint import pprint
 
 import llvmlite.binding as llvm
 import psutil
 
-from asmjit import op
+from . import op
+
+
+def setup_llvm():
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    llvm.initialize_native_asmparser()
 
 
 def uniquify(l):
@@ -31,7 +40,7 @@ class Benchmark:
     def prepare_arguments(previous_args=None, time_factor=1.0):
         """Build argument tuple, to be passed to low level function."""
         if previous_args is None:
-            return 100,
+            return 10000000,
         else:
             return int(previous_args[0] * time_factor),
 
@@ -63,7 +72,10 @@ class Benchmark:
         """Compile and return assembly from LLVM module."""
         tm = self.get_target_machine()
         tm.set_asm_verbosity(0)
-        return tm.emit_assembly(self.get_llvm_module())
+        asm = tm.emit_assembly(self.get_llvm_module())
+        # Remove double comments
+        asm = re.sub(r'## InlineAsm End\n\s*## InlineAsm Start\n\s*', '', asm)
+        return asm
 
     def get_function_ctype(self):
         return ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
@@ -72,6 +84,7 @@ class Benchmark:
         # Compile the module to machine code using MCJIT
         tm = self.get_target_machine()
         runtimes = []
+        return_values = []
         args = self.prepare_arguments()
         with llvm.create_mcjit_compiler(self.get_llvm_module(), tm) as ee:
             ee.finalize_object()
@@ -88,11 +101,10 @@ class Benchmark:
             # TODO replace time.clock with a C implemententation for less overhead
             # TODO return result in machine readable format
             fixed_args = False
-            results = []
             for i in range(repeat):
                 while True:
                     start = time.perf_counter()
-                    results.append(cfunc(*args))
+                    ret = cfunc(*args)
                     end = time.perf_counter()
                     elapsed = end - start
                     if not fixed_args and (elapsed < min_elapsed or elapsed > max_elapsed):
@@ -104,13 +116,14 @@ class Benchmark:
                         # After we have the right argument choice, we keep it.
                         fixed_args = True
                         break
+                return_values.append(ret)
                 runtimes.append(elapsed)
 
         return {'iterations': self.get_iterations(args),
                 'arguments': args,
                 'runtimes': runtimes,
                 'frequency': psutil.cpu_freq().current * 1e6,
-                'results': results}
+                'returned': return_values}
 
 
 class LoopBenchmark(Benchmark):
@@ -210,63 +223,62 @@ class IntegerLoopBenchmark(LoopBenchmark):
             phi=textwrap.indent(self.get_phi_code(), '  '))
 
 
-def bench_instruction(instruction, serial_factor=8, parallel_factor=8, parallel_serial_factor=8):
+def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
+                       verbosity=0):
     # Latency Benchmark
-    s = op.Serialized([instruction] * serial_factor)
-    init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in s.get_source_registers()]
-    b = IntegerLoopBenchmark(s, init_values)
-    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
-    lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
-                for t in result['runtimes']])
-
-    # Throughput Benchmark
-    p = op.Parallelized([op.Serialized([instruction] * parallel_serial_factor)] * parallel_factor)
-    init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
-                   p.get_source_registers()]
-    b = IntegerLoopBenchmark(p, init_values)
-    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
-    tp = min(
-        [(t / parallel_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
-         for t in result['runtimes']])
-
-    # Result compilation
-    return lat, tp
-
-
-def bench_instructions(instructions, serial_factor=8, parallel_factor=4, parallel_serial_factor=8):
-    # Latency Benchmark
+    if verbosity > 0:
+        print('## Latency Benchmark')
     p_instrs = []
     for i in instructions:
         p_instrs.append(op.Serialized([i] * serial_factor))
     p = op.Parallelized(p_instrs)
     init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in p.get_source_registers()]
     b = IntegerLoopBenchmark(p, init_values)
+    if verbosity >= 3:
+        print('### LLVM IR')
+        print(b.build_ir())
+    if verbosity >= 2:
+        print('### Assembly')
+        print(b.get_assembly())
     result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
     lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
                 for t in result['runtimes']])
+    if verbosity > 0:
+        print('### Detailed Results')
+        pprint(result)
+        print()
 
     # Throughput Benchmark
+    if verbosity > 0:
+        print('## Throughput Benchmark')
     p_instrs = []
     for i in instructions:
-        p_instrs.append(op.Serialized([i] * parallel_serial_factor))
+        p_instrs.append(op.Serialized([i] * throughput_serial_factor))
     p = op.Parallelized(p_instrs * parallel_factor)
     init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
                    p.get_source_registers()]
     b = IntegerLoopBenchmark(p, init_values)
+    if verbosity >= 3:
+        print('### LLVM IR')
+        print(b.build_ir())
+    if verbosity >= 2:
+        print('### Assembly')
+        print(b.get_assembly())
     result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
     tp = min(
-        [(t / parallel_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
+        [(t / throughput_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
          for t in result['runtimes']])
+    if verbosity > 0:
+        print('### Detailed Results')
+        pprint(result)
+        print()
 
     # Result compilation
     return lat, tp
 
 
 if __name__ == '__main__':
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-    llvm.initialize_native_asmparser()
+    setup_llvm()
 
     i1 = op.Instruction(
         instruction='add $2, $0',
@@ -303,10 +315,10 @@ if __name__ == '__main__':
     print(b.get_assembly())
     print(b.build_and_execute())
 
-    print(bench_instruction(op.Instruction(
+    print(bench_instructions([op.Instruction(
         instruction='add $2, $0',
         destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])))
+        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])]))
 
     # if len(s.get_source_operand_types())
     # b = IntegerLoopBenchmark(loop_body,

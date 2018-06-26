@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-
+import re
 
 # TODO use abc to force implementation of interface requirements
 
-init_value_by_llvm_type = {'i' + bits: '1' for bits in ['1', '8', '16', '32', '64']}
-init_value_by_llvm_type.update({fp_type: '1.0' for fp_type in ['float', 'double', 'fp128']})
+init_value_by_llvm_type = {'i' + bits: '3' for bits in ['1', '8', '16', '32', '64']}
+init_value_by_llvm_type.update({fp_type: '1.00023' for fp_type in ['float', 'double', 'fp128']})
 init_value_by_llvm_type.update(
     {'<{} x {}>'.format(vec, t): '<' + ', '.join([t + ' ' + v] * vec) + '>'
      for t, v in init_value_by_llvm_type.items()
@@ -191,35 +191,37 @@ class Instruction(Operation):
         Create Instruction object from string.
 
         :param s: must have the form:
-                  "asm_instruction_name ( (src|dst|srcdst):llvm_type:constraint_char)+"
+                  "asm_instruction_name ({(src|dst|srcdst):llvm_type:constraint_char})+"
         """
-        instruction, operands = s.split(maxsplit=1)
+        instruction = s
+        # It is important that the match objects are in reverse order, to allow string replacements
+        # based on original match group locations
+        operands = list(reversed(list(re.finditer(r"\{((?:src|dst)+):([^\}]+)\}", s))))
+        # Destination indices start at 0, source indices at "number of destination operands"
+        dst_index, src_index = 0, ['dst' in o.group(1) for o in operands].count(True)
         dst_ops = []
         src_ops = []
-        src_index = list(['dst' in o.split()[0] for o in operands.split()]).count(True)
-        dst_index = 0
-        for o in operands.split():
-            direction, reg_options = o.split(':', maxsplit=1)
-            r = Register.from_string(reg_options)
-            valid = False
+        for m in operands:
+            direction, register_string = m.group(1, 2)
+            register = Register.from_string(register_string)
             if 'src' in direction and not 'dst' in direction:
-                valid = True
-                src_ops.append(r)
-                instruction += " ${}".format(src_index)
+                src_ops.append(register)
+                # replace with index string
+                instruction = (instruction[:m.start()] + "${}".format(src_index)
+                               + instruction[m.end():])
                 src_index += 1
             if 'dst' in direction:
-                valid = True
-                dst_ops.append(r)
-                instruction += " ${}".format(dst_index)
+                dst_ops.append(register)
+                # replace with index string
+                instruction = (instruction[:m.start()] + "${}".format(dst_index)
+                               + instruction[m.end():])
                 if 'src' in direction:
-                    src_ops.append(Register(reg_options.split(':', 1)[0], str(dst_index)))
+                    src_ops.append(Register(register_string.split(':', 1)[0], str(dst_index)))
                 dst_index += 1
-            if not valid:
-                raise ValueError("Invalid direction '{}', may only be src, dst or srcdst.".format(
-                    direction))
-        assert len(dst_ops) == 1, "Instruction supports only single destinations."
-        return cls(instruction, dst_ops[0], src_ops)
 
+        if len(dst_ops) != 1:
+            raise ValueError("Instruction supports only single destinations.")
+        return cls(instruction, dst_ops[0], src_ops)
 
 
 class Load(Operation):
@@ -404,4 +406,4 @@ if __name__ == '__main__':
     s4 = Serialized([i1, i2, i3, i4, i5, i6])
     print(s4.build_ir(['%out'], ['%in']), '\n')
 
-    print(Instruction.from_string("add src:i64:r srcdst:i64:r"))
+    print(Instruction.from_string("add {src:i64:r} {srcdst:i64:r}"))
