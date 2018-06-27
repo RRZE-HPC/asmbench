@@ -6,8 +6,7 @@ import re
 import itertools
 import argparse
 import random
-
-import llvmlite.binding as llvm
+from pprint import pprint
 
 from asmjit import op, bench
 
@@ -320,7 +319,7 @@ def extract_instruction_information(data, verbosity=0):
     return instr_data
 
 
-def filter_relevant_instructions(instruction_data, verbosity=0):
+def filter_relevant_instructions_from_info(instruction_data, verbosity=0):
     """
     Return name of instructions that can be run on this architecture and do not have other issues
     """
@@ -332,20 +331,30 @@ def filter_relevant_instructions(instruction_data, verbosity=0):
                       'HasBITALG', 'HasVPOPCNTDQ']
                 for p in instr_info['predicates']]):
             if verbosity > 0:
-                print('skipped', instr_name, 'due to Not64BitMode', file=sys.stderr)
+                print('skipped', instr_name, 'due to predicates', file=sys.stderr)
             continue
         # FIXME
         if (instr_name in ['CMPPDrri', 'CMPPSrri', 'CMPSDrr', 'CMPSSrr', 'RDSSPD', 'RDSSPQ',
                            'VMREAD64rr', 'VMWRITE64rr', 'VPCLMULQDQYrr']
                 or any([instr_name.startswith(p) for p in ['MMX_', 'VPCMP', 'VCMP']])):
             if verbosity > 0:
-                print('skipped', instr_name, 'due to blacklisted instrunction name:', instr_name,
+                print('skipped', instr_name, 'due to blacklisted instruction name:', instr_name,
                       file=sys.stderr)
             continue
         yield instr_name
 
 
-def build_instruction_objects(instruction_data, instruction_names=None):
+def filter_relevant_instruction_from_operation(instructions, verbosity=0):
+    for instr_name, instr_op in instructions.items():
+        # Filter instructions that can not be serialized easily
+        if not can_serialize(instr_op):
+            if verbosity > 0:
+                print("skipped", instr_name, " will not serialize.")
+            continue
+        yield instr_name
+
+
+def build_instruction_objects(instruction_data, instruction_names=None, verbosity=0):
     if instruction_names is None:
         instruction_names = instruction_data.keys()
 
@@ -358,12 +367,12 @@ def build_instruction_objects(instruction_data, instruction_names=None):
         try:
             if len(instr_info['destination operands']) < 1:
                 # FIXME use "uses" and "defines"
-                continue
+                raise ValueError('Missing destination operand(s)')
             elif len(instr_info['destination operands']) > 1:
                 raise ValueError("Multiple destination operands are not supported")
             for do_name, do_type in instr_info['destination operands'].items():
                 if len(do_type) < 1:
-                    continue
+                    raise ValueError('No destination operand type')
                 elif len(do_type) > 1:
                     # FIXME which one to select?
                     pass
@@ -388,7 +397,8 @@ def build_instruction_objects(instruction_data, instruction_names=None):
                     constraint = so_type[0][0]
                 source_operands.append(build_operand(constraint, so_type[0][1]))
         except ValueError as e:
-            print("skipped", instr_name, str(e), file=sys.stderr)
+            if verbosity > 0:
+                print("skipped", instr_name, str(e), file=sys.stderr)
             continue
 
         # Build instruction string from asm string
@@ -405,10 +415,6 @@ def build_instruction_objects(instruction_data, instruction_names=None):
             destination_operand=destination_operand,
             source_operands=source_operands)
 
-        # Filter instructions that can not be serialized easily
-        if not can_serialize(instr_op):
-            continue
-
         yield (instr_name, instr_op)
 
 
@@ -423,23 +429,17 @@ def main():
 
     data = read_tablegen_output(args.input)
     instruction_data = extract_instruction_information(data, verbosity=args.verbosity)
-    rel_instruction_names = filter_relevant_instructions(instruction_data, verbosity=args.verbosity)
+    rel_instruction_names = list(
+        filter_relevant_instructions_from_info(instruction_data, verbosity=args.verbosity))
     instructions = collections.OrderedDict(build_instruction_objects(
-            instruction_data, rel_instruction_names))
-
-    if args.verbosity > 0:
-        print('instructions:', len(instructions))
-        print('2-combinations:', len(list(combined_instructions(instructions, 2))))
-
-    if args.verbosity > 0:
-        for ret_type, instrs in rel_instruction_names.items():
-            print(ret_type, 'has', len(instrs), 'instructions')
+            instruction_data, rel_instruction_names, verbosity=args.verbosity))
+    rel_instruction_names = [
+        iname
+        for iname in filter_relevant_instruction_from_operation(instructions, verbosity=args.verbosity)
+        if iname in rel_instruction_names]
 
     # Setup LLVM environment
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-    llvm.initialize_native_asmparser()
+    bench.setup_llvm()
 
     # Benchmark TP and Lat for each instruction
     # for instr_name, instr_op in instructions.items():
@@ -458,30 +458,41 @@ def main():
     #    tp, lat = bench.bench_instructions([instructions[a], instructions[b]]#)
     #    print("{:>5.2f} {:>5.2f}".format(tp, lat))
 
-    for n in ['ADD32ri', 'ADD64ri', 'CMP32rm', 'CMP32rr', 'CMP64ri', 'CMP64rr', 'INC64r', 'MOVSX64rm32', 'SUB32ri', 'VADDPDYrm', 'VADDSDrm', 'VADDSDrr', 'VADDSSrr', 'VCVTSI642SSrr_Int', 'VCVTSS2SIrr_Int', 'VFMADD213PDYr', 'VFMADD213PDr', 'VFMADD213PSYr', 'VFMADD213PSr', 'VFMADD213SDr', 'VFMADD213SSr', 'VINSERTF128rr', 'VMULPDYrr', 'VMULSDrm_Int', 'VMULSDrr_Int', 'VMULSSrr_Int', 'VSUBPDYrm', 'VSUBSDrm_Int', 'VSUBSDrr_Int', 'VSUBSSrr_Int']:
-        if n not in instructions and n.replace('m', 'r') not in instructions:
-            print("NOT FOUND", n, "please investigate")
+    if args.verbosity > 0:
+        print('instructions:', len(instructions))
+        print('2-combinations:', len(list(combined_instructions(instructions, 2))))
 
-    return
-
-    # Benchmark random instruction sequences
     # Build subgroups for each return type
     instructions_ret_type = collections.defaultdict(collections.OrderedDict)
+    if args.verbosity > 0:
+        for ret_type in rel_instruction_names:
+            print(ret_type, 'has', len(instrs), 'instructions')
+
+    # Benchmark random instruction sequences
     for instr_name, instr_op in instructions.items():
         instructions_ret_type[instr_op.get_destination_registers()[0].llvm_type][
             instr_name] = (instr_name, instr_op)
     # Constructing random benchmarks, one for each return type
     for t in instructions_ret_type:
-        selected_names, selected_instrs = zip(
-            *[random.choice(list(instructions_ret_type[t].values())) for i in range(10)])
-        serial = op.Serialized(selected_instrs)
-        p = op.Parallelized([serial] * 10)
+        valid = False
+        while not valid:
+            selected_names, selected_instrs = zip(
+                *[random.choice(list(instructions_ret_type[t].values())) for i in range(10)])
 
-        init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
-                       p.get_source_registers()]
-        b = bench.IntegerLoopBenchmark(p, init_values)
-        print(selected_names)
-        print(b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2))
+            if not all([can_serialize(i) for i in selected_instrs]):
+                continue
+            else:
+                valid = True
+
+            serial = op.Serialized(selected_instrs)
+            p = op.Parallelized([serial] * 10)
+
+            init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
+                           p.get_source_registers()]
+            b = bench.IntegerLoopBenchmark(p, init_values)
+            print(selected_names)
+            pprint(selected_instrs)
+            print(b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2))
 
 
 def can_serialize(instr):
@@ -496,7 +507,7 @@ def can_serialize(instr):
 def combined_instructions(instructions, length):
     for instr_names in itertools.combinations(instructions, length):
         instrs = [instructions[n] for n in instr_names]
-        dst_types = list([i.get_destination_registers()[0].llvm_type for i in instrs])
+        dst_types = list([i.get_destination_registers()[0].llvm_type ])
         if not all([can_serialize(i) for i in instrs]) and dst_types[1:] == dst_types[:-1]:
             continue
         yield instrs

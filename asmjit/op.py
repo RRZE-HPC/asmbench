@@ -4,7 +4,11 @@ import re
 # TODO use abc to force implementation of interface requirements
 
 init_value_by_llvm_type = {'i' + bits: '3' for bits in ['1', '8', '16', '32', '64']}
-init_value_by_llvm_type.update({fp_type: '1.00023' for fp_type in ['float', 'double', 'fp128']})
+# LLVM requires floating point constants to have a non-repeating binary representation
+# See http://llvm.org/docs/LangRef.html#simple-constants for details
+init_value_by_llvm_type.update({fp_type: str(1+1/2**10)
+                                for fp_type in ['float', 'double', 'fp128']})
+# For vector-types we reuse the scalar values
 init_value_by_llvm_type.update(
     {'<{} x {}>'.format(vec, t): '<' + ', '.join([t + ' ' + v] * vec) + '>'
      for t, v in init_value_by_llvm_type.items()
