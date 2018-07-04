@@ -26,7 +26,10 @@ def main():
                                        parallel_factor=args.parallel,
                                        throughput_serial_factor=args.throughput_serial,
                                        verbosity=args.verbose)
-    print("Latency: {}\nThroughput: {}\n".format(lat, tp))
+    print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
+
+    b = bench.IntegerLoopBenchmark(args.instructions[0])
+    b.get_iaca_analysis()
 
 
 if __name__ == "__main__":

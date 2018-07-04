@@ -473,7 +473,9 @@ def main():
         instructions_ret_type[instr_op.get_destination_registers()[0].llvm_type][
             instr_name] = (instr_name, instr_op)
     # Constructing random benchmarks, one for each return type
-    for t in instructions_ret_type:
+    random.seed(42)
+    parallel_factor = 8
+    for t in sorted(instructions_ret_type):
         valid = False
         while not valid:
             selected_names, selected_instrs = zip(
@@ -485,14 +487,22 @@ def main():
                 valid = True
 
             serial = op.Serialized(selected_instrs)
-            p = op.Parallelized([serial] * 10)
+            p = op.Parallelized([serial] * parallel_factor)
 
             init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
                            p.get_source_registers()]
             b = bench.IntegerLoopBenchmark(p, init_values)
-            print(selected_names)
-            pprint(selected_instrs)
-            print(b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2))
+            print('## Selected Instructions')
+            print(', '.join(selected_names))
+            print('## Generated Assembly ({}x parallel)'.format(parallel_factor))
+            print(b.get_assembly())
+            #pprint(selected_instrs)
+            r = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+            r['parallel_factor'] = parallel_factor
+            print('## Detailed Results')
+            pprint(r)
+            print("minimal throughput: {:.2f} cy".format(
+                min(r['runtimes'])/r['iterations']*r['frequency']/parallel_factor))
 
 
 def can_serialize(instr):

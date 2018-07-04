@@ -15,6 +15,9 @@ init_value_by_llvm_type.update(
      for vec in [2, 4, 8, 16, 32, 64]})
 
 
+class NotSerializableError(Exception):
+    pass
+
 class Operand:
     def __init__(self, llvm_type):
         self.llvm_type = llvm_type
@@ -28,6 +31,16 @@ class Operand:
             ', '.join(['{}={!r}'.format(k, v) for k, v in self.__dict__.items()
                        if not k.startswith('_')]))
 
+    @staticmethod
+    def from_string(s):
+        options = [Register.from_string, Immediate.from_string, MemoryReference.from_string]
+        for o in options:
+            try:
+                return o(s)
+            except ValueError:
+                continue
+        raise ValueError("No matching operand type found for '{}'.".format(s))
+
 
 class Immediate(Operand):
     def __init__(self, llvm_type, value):
@@ -36,6 +49,19 @@ class Immediate(Operand):
 
     def get_constraint_char(self):
         return 'i'
+
+    @classmethod
+    def from_string(cls, s):
+        """
+        Create Immediate object from string.
+
+        :param s: must have the form: "llvm_type:value"
+        """
+        llvm_type, value = s.split(':', 1)
+        value_regex = r'(0x[0-9a-fA-F]+|[0-9]+(\.[0-9]+)?)'
+        if not re.match(value_regex, value):
+            raise ValueError("Invalid immediate value, must match {!r}".format(value_regex))
+        return cls(llvm_type, value)
 
 
 class MemoryReference(Operand):
@@ -78,6 +104,38 @@ class MemoryReference(Operand):
     def get_constraint_char(self):
         return 'm'
 
+    def get_registers(self):
+        if self.base:
+            yield self.base
+        if self.index:
+            yield self.index
+
+    @classmethod
+    def from_string(cls, s):
+        """
+        Create MemoryReference from string.
+
+        :param s: must fulfill the regex: "mem:[bdis]+"
+        """
+        m = re.match(r"\*([^:]+):([obiw]+)", s)
+        if not m:
+            raise ValueError("Invalid format, must match 'mem:[obiw]+'.")
+        else:
+            llvm_type, features = m.groups()
+            offset = None
+            if 'o' in features:
+                offset = Immediate('i32', 8)
+            base = None
+            if 'b' in features:
+                base = Register('i64', 'r')
+            index = None
+            if 'i' in features:
+                index = Register('i64', 'r')
+            width = None
+            if 'w' in features:
+                width = Immediate('i32', 8)
+            return cls(llvm_type, offset=offset, base=base, index=index, width=width)
+
 
 class Register(Operand):
     def __init__(self, llvm_type, constraint_char='r'):
@@ -94,7 +152,11 @@ class Register(Operand):
 
         :param s: must have the form: "llvm_type:constraint_char"
         """
-        return cls(*s.split(':', 1))
+        llvm_type, constraint_char = s.split(':', 1)
+        valid_cc = 'rx'
+        if constraint_char not in valid_cc:
+            raise ValueError("Invalid constraint character, must be one of {!r}".format(valid_cc))
+        return cls(llvm_type, constraint_char)
 
 
 class Synthable:
@@ -119,6 +181,9 @@ class Synthable:
             i += 1
         used_registers.add(name)
         return name
+
+    def get_default_init_values(self):
+        return [init_value_by_llvm_type[reg.llvm_type] for reg in self.get_source_registers()]
 
     def __repr__(self):
         return '{}({})'.format(
@@ -146,7 +211,9 @@ class Instruction(Operation):
         self.source_operands = source_operands
 
     def get_source_registers(self):
-        return [sop for sop in self.source_operands if isinstance(sop, Register)]
+        return [sop for sop in self.source_operands if isinstance(sop, Register)] + \
+               [r for mop in self.source_operands if isinstance(mop, MemoryReference)
+                for r in mop.get_registers()]
 
     def get_destination_registers(self):
         if isinstance(self.destination_operand, Register):
@@ -154,10 +221,13 @@ class Instruction(Operation):
         else:
             return []
 
-    def build_ir(self, dst_reg_names, src_reg_names, used_registers):
+    def build_ir(self, dst_reg_names, src_reg_names, used_registers=None):
         """
         Build IR string based on in and out operand names and types.
         """
+        if used_registers is None:
+            used_registers = set(dst_reg_names + src_reg_names)
+
         # Build constraint string from operands
         constraints = ','.join(
             ['=' + self.destination_operand.get_constraint_char()] +
@@ -172,6 +242,11 @@ class Instruction(Operation):
                     type=sop.llvm_type,
                     repr=sop.value))
             elif isinstance(sop, Register):
+                operands.append('{type} {repr}'.format(
+                    type=sop.llvm_type,
+                    repr=src_reg_names[i]))
+                i += 1
+            elif isinstance(sop, MemoryReference):
                 operands.append('{type} {repr}'.format(
                     type=sop.llvm_type,
                     repr=src_reg_names[i]))
@@ -201,26 +276,30 @@ class Instruction(Operation):
         # It is important that the match objects are in reverse order, to allow string replacements
         # based on original match group locations
         operands = list(reversed(list(re.finditer(r"\{((?:src|dst)+):([^\}]+)\}", s))))
-        # Destination indices start at 0, source indices at "number of destination operands"
-        dst_index, src_index = 0, ['dst' in o.group(1) for o in operands].count(True)
+        # Destination indices start at 0
+        dst_index = 0
+        # Source indices at "number of destination operands"
+        src_index = ['dst' in o.group(1) for o in operands].count(True)
+
         dst_ops = []
         src_ops = []
         for m in operands:
-            direction, register_string = m.group(1, 2)
-            register = Register.from_string(register_string)
+            direction, operand_string = m.group(1, 2)
+            operand = Operand.from_string(operand_string)
             if 'src' in direction and not 'dst' in direction:
-                src_ops.append(register)
+                src_ops.append(operand)
                 # replace with index string
                 instruction = (instruction[:m.start()] + "${}".format(src_index)
                                + instruction[m.end():])
                 src_index += 1
             if 'dst' in direction:
-                dst_ops.append(register)
+                dst_ops.append(operand)
                 # replace with index string
                 instruction = (instruction[:m.start()] + "${}".format(dst_index)
                                + instruction[m.end():])
                 if 'src' in direction:
-                    src_ops.append(Register(register_string.split(':', 1)[0], str(dst_index)))
+                    src_ops.append(Register(operand_string.split(':', 1)[0], str(dst_index)))
+                    src_index += 1
                 dst_index += 1
 
         if len(dst_ops) != 1:
@@ -310,7 +389,7 @@ class Serialized(Synthable):
                     if not src_match:
                         src_naming.append(init_value_by_llvm_type[src.llvm_type])
                 if not match:
-                    raise ValueError("Unable to find match.")
+                    raise NotSerializableError("Unable to find match.")
 
             if i == len(self.synths) - 1:
                 # last destination is passed in from outside

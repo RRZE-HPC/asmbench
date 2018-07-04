@@ -5,6 +5,8 @@ import textwrap
 import itertools
 import re
 from pprint import pprint
+import tempfile
+import subprocess
 
 import llvmlite.binding as llvm
 import psutil
@@ -80,6 +82,17 @@ class Benchmark:
     def get_function_ctype(self):
         return ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
 
+    def get_iaca_analysis(self):
+        """Compile and return IACA analysis."""
+        tm = self.get_target_machine()
+        tmpf = tempfile.NamedTemporaryFile("wb")
+        tmpf.write(tm.emit_object(self.get_llvm_module()))
+        tmpf.flush()
+
+        # assuming "iaca.sh" to be available
+        subprocess.check_output(['objdump', tmpf.name])
+
+
     def build_and_execute(self, repeat=10, min_elapsed=0.1, max_elapsed=0.3):
         # Compile the module to machine code using MCJIT
         tm = self.get_target_machine()
@@ -130,7 +143,7 @@ class LoopBenchmark(Benchmark):
     def __init__(self, root_synth, init_values=None):
         super().__init__()
         self.root_synth = root_synth
-        self.init_values = init_values or []
+        self.init_values = init_values or root_synth.get_default_init_values()
 
         if len(root_synth.get_source_registers()) != len(self.init_values):
             raise ValueError("Number of init values and source registers do not match.")
@@ -142,7 +155,7 @@ class LoopBenchmark(Benchmark):
         return ['%out.{}'.format(i) for i in
                 range(len(self.root_synth.get_destination_registers()))]
 
-    def get_phi_code(self):
+    def get_phi_code(self, latency=True):
         # Compile loop carried dependencies
         lcd = []
         # Change in naming (src <-> dst) is on purpose!
@@ -180,7 +193,7 @@ class LoopBenchmark(Benchmark):
                 init_value=init_value,
                 src_name=src_name)
 
-        # Add extra phi for constant values. Assuming LLVM will optimiz them "away"
+        # Add extra phi for constant values. Assuming LLVM will optimize them "away"
         for dst_idx, dst in enumerate(dsts):
             if dst not in [d for d, dn, i, s, sn in lcd]:
                 code += ('{dst_reg} = phi {llvm_type} [{init_value}, %"entry"], '
@@ -225,28 +238,36 @@ class IntegerLoopBenchmark(LoopBenchmark):
 
 def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
                        verbosity=0):
-    # Latency Benchmark
-    if verbosity > 0:
-        print('## Latency Benchmark')
-    p_instrs = []
-    for i in instructions:
-        p_instrs.append(op.Serialized([i] * serial_factor))
-    p = op.Parallelized(p_instrs)
-    init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in p.get_source_registers()]
-    b = IntegerLoopBenchmark(p, init_values)
-    if verbosity >= 3:
-        print('### LLVM IR')
-        print(b.build_ir())
-    if verbosity >= 2:
-        print('### Assembly')
-        print(b.get_assembly())
-    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
-    lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
-                for t in result['runtimes']])
-    if verbosity > 0:
-        print('### Detailed Results')
-        pprint(result)
-        print()
+    not_serializable = False
+    try:
+        # Latency Benchmark
+        if verbosity > 0:
+            print('## Latency Benchmark')
+        p_instrs = []
+        for i in instructions:
+            p_instrs.append(op.Serialized([i] * serial_factor))
+        p = op.Parallelized(p_instrs)
+        b = IntegerLoopBenchmark(p)
+        if verbosity >= 3:
+            print('### LLVM IR')
+            print(b.build_ir())
+        if verbosity >= 2:
+            print('### Assembly')
+            print(b.get_assembly())
+        result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+        lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
+                    for t in result['runtimes']])
+        if verbosity > 0:
+            print('### Detailed Results')
+            pprint(result)
+            print()
+    except op.NotSerializableError as e:
+        print("Latency measurement not possible:", e)
+        not_serializable = True
+
+    if not_serializable:
+        throughput_serial_factor = 1
+        print("WARNING: throughput_serial_factor has be set to 1.")
 
     # Throughput Benchmark
     if verbosity > 0:
@@ -255,9 +276,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     for i in instructions:
         p_instrs.append(op.Serialized([i] * throughput_serial_factor))
     p = op.Parallelized(p_instrs * parallel_factor)
-    init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
-                   p.get_source_registers()]
-    b = IntegerLoopBenchmark(p, init_values)
+    b = IntegerLoopBenchmark(p)
     if verbosity >= 3:
         print('### LLVM IR')
         print(b.build_ir())
