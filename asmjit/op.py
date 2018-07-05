@@ -195,12 +195,6 @@ class Synthable:
 class Operation(Synthable):
     """Base class for operations."""
 
-    def __repr__(self):
-        return '{}({})'.format(
-            self.__class__.__name__,
-            ', '.join(['{}={!r}'.format(k, v) for k, v in self.__dict__.items()
-                       if not k.startswith('_')]))
-
 
 class Instruction(Operation):
     def __init__(self, instruction, destination_operand, source_operands):

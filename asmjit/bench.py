@@ -238,15 +238,18 @@ class IntegerLoopBenchmark(LoopBenchmark):
 
 
 def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
-                       verbosity=0):
+                       serialize=False, verbosity=0):
     not_serializable = False
     try:
         # Latency Benchmark
         if verbosity > 0:
             print('## Latency Benchmark')
         p_instrs = []
-        for i in instructions:
-            p_instrs.append(op.Serialized([i] * serial_factor))
+        if not serialize:
+            for i in instructions:
+                p_instrs.append(op.Serialized([i] * serial_factor))
+        else:
+            p_instrs = [op.Serialized(instructions * serial_factor)]
         p = op.Parallelized(p_instrs)
         b = IntegerLoopBenchmark(p)
         if verbosity >= 3:
@@ -274,8 +277,11 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     if verbosity > 0:
         print('## Throughput Benchmark')
     p_instrs = []
-    for i in instructions:
-        p_instrs.append(op.Serialized([i] * throughput_serial_factor))
+    if not serialize:
+        for i in instructions:
+            p_instrs.append(op.Serialized([i] * throughput_serial_factor))
+    else:
+        p_instrs = [op.Serialized(instructions * throughput_serial_factor)]
     p = op.Parallelized(p_instrs * parallel_factor)
     b = IntegerLoopBenchmark(p)
     if verbosity >= 3:
