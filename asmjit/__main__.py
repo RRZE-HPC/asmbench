@@ -28,8 +28,8 @@ def main():
                                        verbosity=args.verbose)
     print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
 
-    b = bench.IntegerLoopBenchmark(args.instructions[0])
-    b.get_iaca_analysis()
+    #b = bench.IntegerLoopBenchmark(args.instructions[0])
+    #b.get_iaca_analysis()
 
 
 if __name__ == "__main__":

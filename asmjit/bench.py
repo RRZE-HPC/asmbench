@@ -91,6 +91,7 @@ class Benchmark:
 
         # assuming "iaca.sh" to be available
         subprocess.check_output(['objdump', tmpf.name])
+        # WORK IN PROGRESS
 
 
     def build_and_execute(self, repeat=10, min_elapsed=0.1, max_elapsed=0.3):
