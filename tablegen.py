@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import sys
+import textwrap
+
 import collections
 import re
 import itertools
@@ -466,44 +468,89 @@ def main():
     instructions_ret_type = collections.defaultdict(collections.OrderedDict)
     if args.verbosity > 0:
         for ret_type in rel_instruction_names:
-            print(ret_type, 'has', len(instrs), 'instructions')
+            print(ret_type, 'has', len(instructions_ret_type[ret_type]), 'instructions')
 
     # Benchmark random instruction sequences
     for instr_name, instr_op in instructions.items():
         instructions_ret_type[instr_op.get_destination_registers()[0].llvm_type][
             instr_name] = (instr_name, instr_op)
     # Constructing random benchmarks, one for each return type
-    random.seed(42)
-    parallel_factor = 8
-    for t in sorted(instructions_ret_type):
-        valid = False
-        while not valid:
-            selected_names, selected_instrs = zip(
-                *[random.choice(list(instructions_ret_type[t].values())) for i in range(10)])
+    #random.seed(42)
+    #parallel_factor = 8
+    #for t in sorted(instructions_ret_type):
+    #    valid = False
+    #    while not valid:
+    #        selected_names, selected_instrs = zip(
+    #            *[random.choice(list(instructions_ret_type[t].values())) for i in range(10)])
+    #
+    #        if not all([can_serialize(i) for i in selected_instrs]):
+    #            continue
+    #        else:
+    #            valid = True
+    #
+    #        serial = op.Serialized(selected_instrs)
+    #        p = op.Parallelized([serial] * parallel_factor)
+    #
+    #        init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
+    #                       p.get_source_registers()]
+    #        b = bench.IntegerLoopBenchmark(p, init_values)
+    #        print('## Selected Instructions')
+    #        print(', '.join(selected_names))
+    #        print('## Generated Assembly ({}x parallel)'.format(parallel_factor))
+    #        print(b.get_assembly())
+    #        #pprint(selected_instrs)
+    #        r = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+    #        r['parallel_factor'] = parallel_factor
+    #        print('## Detailed Results')
+    #        pprint(r)
+    #        print("minimal throughput: {:.2f} cy".format(
+    #            min(r['runtimes'])/r['iterations']*r['frequency']/parallel_factor))
 
-            if not all([can_serialize(i) for i in selected_instrs]):
-                continue
-            else:
-                valid = True
+    # Reduce to 100 instructions:
+    #instructions = dict(list(instructions.items())[:100])
 
-            serial = op.Serialized(selected_instrs)
-            p = op.Parallelized([serial] * parallel_factor)
+    # Reduce to set of instructions used in Stream Triad:
+    instructions = {k: v for k,v in instructions.items() if k in ['ADD32ri', 'ADD64ri32', 'INC64r', 'SUB32ri', 'VADDPDYrr', 'VADDSDrr', 'VADDSSrr', 'VCVTSI642SSrr', 'VFMADD213PDYr', 'VFMADD213PDr', 'VFMADD213PSYr', 'VFMADD213PSr', 'VFMADD213SDr', 'VFMADD213SSr', 'VINSERTF128rr', 'VMULPDYrr', 'VMULSDrr_Int', 'VMULSSrr_Int', 'VSUBSDrr_Int', 'VSUBSSrr_Int']}
 
-            init_values = [op.init_value_by_llvm_type[reg.llvm_type] for reg in
-                           p.get_source_registers()]
-            b = bench.IntegerLoopBenchmark(p, init_values)
-            print('## Selected Instructions')
-            print(', '.join(selected_names))
-            print('## Generated Assembly ({}x parallel)'.format(parallel_factor))
-            print(b.get_assembly())
-            #pprint(selected_instrs)
-            r = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
-            r['parallel_factor'] = parallel_factor
-            print('## Detailed Results')
-            pprint(r)
-            print("minimal throughput: {:.2f} cy".format(
-                min(r['runtimes'])/r['iterations']*r['frequency']/parallel_factor))
-
+    random.seed(23)
+    instructions_per_run = 3
+    parallel_factor = 4
+    print(textwrap.dedent("""
+        # This file contains example data measured on an Intel I7-6700HQ with 2.6GHz with Turbo mode
+        # disabled.
+        
+        # Comments are possible everywhere after hash symbols.
+        
+        # This part contains necessary configuration information.
+        configuration:
+            model: three-level   # we assume that instructions are decomposed into uops
+            num_ports: 7         # our hardware has 4 execution ports
+            num_uops_per_insn: 4 # the maximal number of uops into which an instruction can be decomposed
+            slack_limit: 0.0     # relative margin of error for cycle measurements
+        
+        
+        # Here follows a list of experiments.
+        """))
+    for i in range(100):
+        selected_names, selected_instrs = zip(*[random.choice(list(instructions.items()))
+                                                for i in range(instructions_per_run)])
+        print("experiment:")
+        p = op.Parallelized(selected_instrs*parallel_factor)
+        b = bench.IntegerLoopBenchmark(p)
+        print('    instructions:')
+        print('        '+('\n        '.join(selected_names)))
+        if args.verbosity > 0:
+            print('    ir:')
+            print(textwrap.indent(b.build_ir(), ' '*8))
+            print('    asm:')
+            print(textwrap.indent(b.get_assembly(), ' '*8))
+        r = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+        r['parallel_factor'] = parallel_factor
+        if args.verbosity > 0:
+            print('    detailed_result:')
+            pprint(r, indent=8)
+        print("    cycles: {:.2f}".format(
+            min(r['runtimes'])/r['iterations']*r['frequency']/parallel_factor))
 
 def can_serialize(instr):
     if not any([so.llvm_type == instr.destination_operand.llvm_type and
@@ -517,7 +564,7 @@ def can_serialize(instr):
 def combined_instructions(instructions, length):
     for instr_names in itertools.combinations(instructions, length):
         instrs = [instructions[n] for n in instr_names]
-        dst_types = list([i.get_destination_registers()[0].llvm_type ])
+        dst_types = list([i.get_destination_registers()[0].llvm_type for i in instrs])
         if not all([can_serialize(i) for i in instrs]) and dst_types[1:] == dst_types[:-1]:
             continue
         yield instrs

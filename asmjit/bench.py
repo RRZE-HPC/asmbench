@@ -7,9 +7,14 @@ import re
 from pprint import pprint
 import tempfile
 import subprocess
+import sys
 
 import llvmlite.binding as llvm
 import psutil
+try:
+    from kerncraft import iaca
+except ImportError:
+    iaca = None
 
 from . import op
 
@@ -28,10 +33,6 @@ def uniquify(l):
 
 
 class Benchmark:
-    def __init__(self):
-        self._tm = None
-        self._llvm_module = None
-
     def __repr__(self):
         return '{}({})'.format(
             self.__class__.__name__,
@@ -47,34 +48,30 @@ class Benchmark:
             return int(previous_args[0] * time_factor),
 
     @staticmethod
-    def get_iterations(args):
+    def get_iterations(args) -> int:
         """Return number of iterations performed, based on lower level function arguments."""
         return args[0]
 
     def build_ir(self):
         raise NotImplementedError()
 
-    def get_llvm_module(self):
+    def get_llvm_module(self, iaca_marker=False):
         """Build and return LLVM module from LLVM IR code."""
-        if self._llvm_module is None:
-            self._llvm_module = llvm.parse_assembly(self.build_ir())
-            self._llvm_module.verify()
-        return self._llvm_module
+        ir = self.build_ir(iaca_marker=iaca_marker)
+        return llvm.parse_assembly(ir)
 
     def get_target_machine(self):
         """Instantiate and return target machine."""
-        if self._tm is None:
-            features = llvm.get_host_cpu_features().flatten()
-            cpu = llvm.get_host_cpu_name()
-            self._tm = llvm.Target.from_default_triple().create_target_machine(
-                cpu=cpu, features=features, opt=3)
-        return self._tm
+        features = llvm.get_host_cpu_features().flatten()
+        cpu = llvm.get_host_cpu_name()
+        return llvm.Target.from_default_triple().create_target_machine(
+             cpu=cpu, features=features, opt=3)
 
-    def get_assembly(self):
+    def get_assembly(self, iaca_marker=False):
         """Compile and return assembly from LLVM module."""
         tm = self.get_target_machine()
         tm.set_asm_verbosity(0)
-        asm = tm.emit_assembly(self.get_llvm_module())
+        asm = tm.emit_assembly(self.get_llvm_module(iaca_marker=iaca_marker))
         # Remove double comments
         asm = re.sub(r'## InlineAsm End\n\s*## InlineAsm Start\n\s*', '', asm)
         return asm
@@ -82,17 +79,15 @@ class Benchmark:
     def get_function_ctype(self):
         return ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
 
-    def get_iaca_analysis(self):
+    def get_iaca_analysis(self, arch):
         """Compile and return IACA analysis."""
+        if iaca is None:
+            raise ValueError("kerncraft not installed. IACA analysis is not supported.")
         tm = self.get_target_machine()
         tmpf = tempfile.NamedTemporaryFile("wb")
-        tmpf.write(tm.emit_object(self.get_llvm_module()))
+        tmpf.write(tm.emit_object(self.get_llvm_module(iaca_marker=True)))
         tmpf.flush()
-
-        # assuming "iaca.sh" to be available
-        subprocess.check_output(['objdump', tmpf.name])
-        # WORK IN PROGRESS
-
+        return iaca.iaca_analyse_instrumented_binary(tmpf.name, arch)
 
     def build_and_execute(self, repeat=10, min_elapsed=0.1, max_elapsed=0.3):
         # Compile the module to machine code using MCJIT
@@ -141,10 +136,11 @@ class Benchmark:
 
 
 class LoopBenchmark(Benchmark):
-    def __init__(self, root_synth, init_values=None):
+    def __init__(self, root_synth, init_values=None, loop_carried_dependencies=True):
         super().__init__()
         self.root_synth = root_synth
         self.init_values = init_values or root_synth.get_default_init_values()
+        self.loop_carried_dependencies = loop_carried_dependencies
 
         if len(root_synth.get_source_registers()) != len(self.init_values):
             raise ValueError("Number of init values and source registers do not match.")
@@ -156,7 +152,9 @@ class LoopBenchmark(Benchmark):
         return ['%out.{}'.format(i) for i in
                 range(len(self.root_synth.get_destination_registers()))]
 
-    def get_phi_code(self, latency=True):
+    def get_phi_code(self):
+        if not self.loop_carried_dependencies:
+            return ''
         # Compile loop carried dependencies
         lcd = []
         # Change in naming (src <-> dst) is on purpose!
@@ -210,8 +208,19 @@ class LoopBenchmark(Benchmark):
 
 
 class IntegerLoopBenchmark(LoopBenchmark):
-    def build_ir(self):
-        return textwrap.dedent('''\
+    def build_ir(self, iaca_marker=False):
+        if iaca_marker:
+            iaca_start_marker = textwrap.dedent('''\
+                call void asm "movl    $$111,%ebx", ""()
+                call void asm ".byte   100,103,144", ""()''')
+            iaca_stop_marker = textwrap.dedent('''\
+                call void asm "movl    $$222,%ebx", ""()
+                call void asm ".byte   100,103,144", ""()''')
+        else:
+            iaca_start_marker = ''
+            iaca_stop_marker = ''
+
+        ir = textwrap.dedent('''\
             define i64 @"test"(i64 %"N")
             {{
             entry:
@@ -221,24 +230,30 @@ class IntegerLoopBenchmark(LoopBenchmark):
             loop:
               %"loop_counter" = phi i64 [0, %"entry"], [%"loop_counter.1", %"loop"]
             {phi}
+            {iaca_start_marker}
             {loop_body}
               %"loop_counter.1" = add i64 %"loop_counter", 1
               %"loop_cond.1" = icmp slt i64 %"loop_counter.1", %"N"
               br i1 %"loop_cond.1", label %"loop", label %"end"
-
+            
             end:
               %"ret" = phi i64 [0, %"entry"], [%"loop_counter", %"loop"]
+            {iaca_stop_marker}
               ret i64 %"ret"
             }}
             ''').format(
             loop_body=textwrap.indent(
                 self.root_synth.build_ir(self.get_destination_names(),
                                          self.get_source_names()), '  '),
-            phi=textwrap.indent(self.get_phi_code(), '  '))
+            phi=textwrap.indent(self.get_phi_code(), '  '),
+            iaca_start_marker=iaca_start_marker,
+            iaca_stop_marker=iaca_stop_marker)
+
+        return ir
 
 
 def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
-                       serialize=False, verbosity=0):
+                       serialize=False, verbosity=0, iaca_comparison=None):
     not_serializable = False
     try:
         # Latency Benchmark
@@ -261,6 +276,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
         lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
                     for t in result['runtimes']])
+        result['latency'] = lat
         if verbosity > 0:
             print('### Detailed Results')
             pprint(result)
@@ -294,10 +310,20 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     tp = min(
         [(t / throughput_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
          for t in result['runtimes']])
+    result['throughput'] = tp
+    if iaca_comparison is not None:
+        iaca_analysis = b.get_iaca_analysis(iaca_comparison)
+        result['iaca throughput'] = iaca_analysis['throughput']/(
+                parallel_factor * throughput_serial_factor)
     if verbosity > 0:
         print('### Detailed Results')
         pprint(result)
         print()
+    if verbosity > 1 and iaca_comparison is not None:
+        print('### IACA Results')
+        print(iaca_analysis['output'])
+        print('!!! throughput_serial_factor={} and parallel_factor={}'.format(
+            throughput_serial_factor, parallel_factor))
 
     # Result compilation
     return lat, tp

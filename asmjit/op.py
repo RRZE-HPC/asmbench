@@ -205,9 +205,18 @@ class Instruction(Operation):
         self.source_operands = source_operands
 
     def get_source_registers(self):
-        return [sop for sop in self.source_operands if isinstance(sop, Register)] + \
-               [r for mop in self.source_operands if isinstance(mop, MemoryReference)
-                for r in mop.get_registers()]
+        sop_types = set()
+        sr = []
+        for sop in self.source_operands:
+            if isinstance(sop, Register):
+                t = (sop.llvm_type, sop.get_constraint_char())
+                if t not in sop_types:
+                    sop_types.add(t)
+                    sr.append(sop)
+            elif isinstance(sop, MemoryReference):
+                sr += list(sop.get_registers())
+
+        return sr
 
     def get_destination_registers(self):
         if isinstance(self.destination_operand, Register):
@@ -229,6 +238,7 @@ class Instruction(Operation):
 
         # Build argument string from operands and register names
         operands = []
+        sop_types = {}
         i = 0
         for sop in self.source_operands:
             if isinstance(sop, Immediate):
@@ -236,10 +246,17 @@ class Instruction(Operation):
                     type=sop.llvm_type,
                     repr=sop.value))
             elif isinstance(sop, Register):
-                operands.append('{type} {repr}'.format(
-                    type=sop.llvm_type,
-                    repr=src_reg_names[i]))
-                i += 1
+                sop_t = (sop.llvm_type, sop.get_constraint_char())
+                if sop_t in sop_types:
+                    operands.append('{type} {repr}'.format(
+                        type=sop.llvm_type,
+                        repr=src_reg_names[sop_types[sop_t]]))
+                else:
+                    sop_types[sop_t] = i
+                    operands.append('{type} {repr}'.format(
+                        type=sop.llvm_type,
+                        repr=src_reg_names[i]))
+                    i += 1
             elif isinstance(sop, MemoryReference):
                 operands.append('{type} {repr}'.format(
                     type=sop.llvm_type,

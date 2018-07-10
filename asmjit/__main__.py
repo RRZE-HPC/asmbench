@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 
+import llvmlite.binding as llvm
+
 from . import op, bench
 
 
@@ -18,6 +20,9 @@ def main():
                              'benchmark')
     parser.add_argument('--throughput-serial', '-t', type=int, default=8,
                         help='length of serial instances of serial chains in throughput benchmark')
+    parser.add_argument('--iaca', type=str, default=None,
+                        help='Compare throughput measurement with IACA analysis, pass '
+                             'micro-architecuture abbreviation. (i.e. SNB, IVB, HSW, SKL, SKX)')
     parser.add_argument("--verbose", "-v", action="count", default=0,
                         help="increase output verbosity")
     args = parser.parse_args()
@@ -28,11 +33,9 @@ def main():
                                        parallel_factor=args.parallel,
                                        throughput_serial_factor=args.throughput_serial,
                                        serialize=args.serialize,
-                                       verbosity=args.verbose)
+                                       verbosity=args.verbose,
+                                       iaca_comparison=args.iaca)
     print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
-
-    #b = bench.IntegerLoopBenchmark(args.instructions[0])
-    #b.get_iaca_analysis()
 
 
 if __name__ == "__main__":
