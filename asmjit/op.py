@@ -209,9 +209,8 @@ class Instruction(Operation):
         sr = []
         for sop in self.source_operands:
             if isinstance(sop, Register):
-                t = (sop.llvm_type, sop.get_constraint_char())
-                if t not in sop_types:
-                    sop_types.add(t)
+                if sop.llvm_type not in sop_types:
+                    sop_types.add(sop.llvm_type)
                     sr.append(sop)
             elif isinstance(sop, MemoryReference):
                 sr += list(sop.get_registers())
@@ -246,13 +245,12 @@ class Instruction(Operation):
                     type=sop.llvm_type,
                     repr=sop.value))
             elif isinstance(sop, Register):
-                sop_t = (sop.llvm_type, sop.get_constraint_char())
-                if sop_t in sop_types:
+                if sop.llvm_type in sop_types:
                     operands.append('{type} {repr}'.format(
                         type=sop.llvm_type,
-                        repr=src_reg_names[sop_types[sop_t]]))
+                        repr=src_reg_names[sop_types[sop.llvm_type]]))
                 else:
-                    sop_types[sop_t] = i
+                    sop_types[sop.llvm_type] = i
                     operands.append('{type} {repr}'.format(
                         type=sop.llvm_type,
                         repr=src_reg_names[i]))
