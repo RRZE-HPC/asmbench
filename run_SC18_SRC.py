@@ -181,18 +181,24 @@ if __name__ == '__main__':
     ]
     instructions_measured = collections.OrderedDict()
     for i_str, i in instructions:
-        lat, tp = bench.bench_instructions([i])
+        lat, tp = bench.bench_instructions(
+            [i], serial_factor=8, throughput_serial_factor=8, parallel_factor=10)
         print('{:<30} LAT {:.3f} cy'.format(i_str, lat))
         print('{:<30} TP  {:.3f} cy'.format(i_str, tp))
         instructions_measured[i_str] = (lat, tp)
 
     #jit_based_benchs()
 
+    two_combinations_measured = collections.OrderedDict()
+
     for a, b in itertools.combinations_with_replacement(instructions, 2):
         print(a[0], b[0])
-        lat, tp = bench.bench_instructions([a[1], b[1]])
-        print(lat, tp)
-        print("same-port metric: ",
-              (tp-max(instructions_measured[a[0]][1], instructions_measured[b[0]][1])) /
-              min(instructions_measured[a[0]][1], instructions_measured[b[0]][1]))
+        lat, tp = bench.bench_instructions(
+            [a[1], b[1]],
+            serial_factor = 8, throughput_serial_factor = 8, parallel_factor = 10)
+        same_port_metric = ((
+            tp-max(instructions_measured[a[0]][1], instructions_measured[b[0]][1])) /
+            min(instructions_measured[a[0]][1], instructions_measured[b[0]][1]))
+        print("LAT {:.3f} cy, TP {:.3f} cy, SPM {:.2f}".format(lat, tp, same_port_metric))
+        two_combinations_measured[a[0], b[0]] = (lat, tp, same_port_metric)
 
