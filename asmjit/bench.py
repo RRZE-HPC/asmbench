@@ -45,7 +45,10 @@ class Benchmark:
         if previous_args is None:
             return 10000000,
         else:
-            return int(previous_args[0] * time_factor),
+            try:
+                return int(previous_args[0] * time_factor),
+            except OverflowError:
+                return previous_args[0]*10, 
 
     @staticmethod
     def get_iterations(args) -> int:
