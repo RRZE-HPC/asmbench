@@ -66,7 +66,7 @@ class Benchmark:
     def get_target_machine(self):
         """Instantiate and return target machine."""
         features = llvm.get_host_cpu_features().flatten()
-        cpu = llvm.get_host_cpu_name()
+        cpu = '' # llvm.get_host_cpu_name()  # Work around until ryzen problems are fixed
         return llvm.Target.from_default_triple().create_target_machine(
              cpu=cpu, features=features, opt=3)
 
@@ -123,6 +123,9 @@ class Benchmark:
                     ret = cfunc(*args)
                     end = time.perf_counter()
                     elapsed = end - start
+                    if ret != args[0]-1:
+                        raise RuntimeError(
+                            "Return value {} is invalid, should have been {}.".format(ret, args[0]-1))
                     if not fixed_args and (elapsed < min_elapsed or elapsed > max_elapsed):
                         target_elapsed = 2 / 3 * min_elapsed + 1 / 3 * max_elapsed
                         factor = target_elapsed / elapsed

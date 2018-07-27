@@ -185,7 +185,10 @@ if __name__ == '__main__':
     instructions_measured = collections.OrderedDict()
     for llvm_name, i_str, i in instructions:
         lat, tp = bench.bench_instructions(
-            [i], serial_factor=8, throughput_serial_factor=8, parallel_factor=10)
+            [i],
+            serial_factor=8, throughput_serial_factor=8, parallel_factor=10,
+            verbosity=0)
+            #serial_factor=8, throughput_serial_factor=8, parallel_factor=10)
         print('{:<16}  LAT {:.3f} cy  TP {:.3f} cy'.format(llvm_name, lat, tp))
         instructions_measured[llvm_name] = (lat, tp)
 
