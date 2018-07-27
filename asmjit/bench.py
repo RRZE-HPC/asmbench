@@ -280,6 +280,9 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         if verbosity >= 2:
             print('### Assembly')
             print(b.get_assembly())
+        if verbosity >= 3:
+            print('### IACA Analysis')
+            print(b.get_iaca_analysis('SKL')['output'])
         result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
         lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
                     for t in result['runtimes']])
@@ -313,6 +316,9 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     if verbosity >= 2:
         print('### Assembly')
         print(b.get_assembly())
+    if verbosity >= 3:
+        print('### IACA Analysis')
+        print(b.get_iaca_analysis('SKL')['output'])
     result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
     tp = min(
         [(t / throughput_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
