@@ -48,7 +48,7 @@ class Benchmark:
             try:
                 return int(previous_args[0] * time_factor),
             except OverflowError:
-                return previous_args[0]*10, 
+                return previous_args[0]*10,
 
     @staticmethod
     def get_iterations(args) -> int:
@@ -114,7 +114,11 @@ class Benchmark:
             # TODO return result in machine readable format
             fixed_args = False
             for i in range(repeat):
+                tries = 0
                 while True:
+                    if tries > 10:
+                        raise RuntimeError("Unable to measure non-zero runtime.")
+                    tries += 1
                     start = time.perf_counter()
                     ret = cfunc(*args)
                     end = time.perf_counter()
