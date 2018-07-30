@@ -180,6 +180,9 @@ if __name__ == '__main__':
             ('VMULSSrr', 'vmulss {src:float:x}, {src:float:x}, {dst:float:x}'),
             ('VSUBSDrr', 'vsubsd {src:double:x}, {src:double:x}, {dst:double:x}'),
             ('VSUBSSrr', 'vsubss {src:float:x}, {src:float:x}, {dst:float:x}'),
+            ('VDIVPDYrr', 'vdivpd {src:<4 x double>:x}, {src:<4 x double>:x}, {dst:<4 x double>:x}'),
+            ('VDIVSDrr_Int', 'vdivsd {src:double:x}, {src:double:x}, {dst:double:x}'),
+            ('VMULSSrr_Int', 'vdivss {src:float:x}, {src:float:x}, {dst:float:x}'),
             ]
     ]
     instructions_measured = collections.OrderedDict()
