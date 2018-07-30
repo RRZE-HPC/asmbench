@@ -187,7 +187,7 @@ if __name__ == '__main__':
         lat, tp = bench.bench_instructions(
             [i],
             serial_factor=8, throughput_serial_factor=8, parallel_factor=10,
-            verbosity=0)
+            verbosity=0, repeat=10, min_elapsed=0.3, max_elapsed=0.5)
             #serial_factor=8, throughput_serial_factor=8, parallel_factor=10)
         print('{:<16}  LAT {:.3f} cy  TP {:.3f} cy'.format(llvm_name, lat, tp))
         instructions_measured[llvm_name] = (lat, tp)
@@ -199,9 +199,8 @@ if __name__ == '__main__':
     for a, b in itertools.combinations_with_replacement(instructions, 2):
         lat, tp = bench.bench_instructions(
             [a[2], b[2]],
-            serial_factor=8,
-            throughput_serial_factor=8,
-            parallel_factor=10)
+            serial_factor=8, throughput_serial_factor=8, parallel_factor=10,
+            verbosity=0, repeat=10, min_elapsed=0.3, max_elapsed=0.5)
         same_port_metric = ((
             tp-max(instructions_measured[a[0]][1], instructions_measured[b[0]][1])) /
             min(instructions_measured[a[0]][1], instructions_measured[b[0]][1]))

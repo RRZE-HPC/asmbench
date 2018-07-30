@@ -263,7 +263,8 @@ class IntegerLoopBenchmark(LoopBenchmark):
 
 
 def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
-                       serialize=False, verbosity=0, iaca_comparison=None):
+                       serialize=False, verbosity=0, iaca_comparison=None,
+                       repeat=4, min_elapsed=0.1, max_elapsed=0.2):
     not_serializable = False
     try:
         # Latency Benchmark
@@ -286,7 +287,8 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         if verbosity >= 3:
             print('### IACA Analysis')
             print(b.get_iaca_analysis('SKL')['output'])
-        result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+        result = b.build_and_execute(
+            repeat=repeat, min_elapsed=min_elapsed, max_elapsed=max_elapsed)
         lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
                     for t in result['runtimes']])
         result['latency'] = lat
@@ -322,7 +324,8 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     if verbosity >= 3:
         print('### IACA Analysis')
         print(b.get_iaca_analysis('SKL')['output'])
-    result = b.build_and_execute(repeat=4, min_elapsed=0.1, max_elapsed=0.2)
+    result = b.build_and_execute(
+        repeat=repeat, min_elapsed=min_elapsed, max_elapsed=max_elapsed)
     tp = min(
         [(t / throughput_serial_factor / parallel_factor) * result['frequency'] / result['iterations']
          for t in result['runtimes']])
