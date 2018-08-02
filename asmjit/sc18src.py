@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 import collections
 import itertools
+import socket
 
-from asmjit import op, bench, oldjit
+import numpy
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+from asmjit import op, bench
+from asmjit import oldjit
 
 
 def jit_based_benchs():
@@ -152,6 +158,31 @@ def jit_based_benchs():
             cy_per_it_lat=cy_per_it_lat,
             cy_per_it_tp=cy_per_it_tp))
 
+def plot_combined(single_measured, combined_measured):
+    instructions = list(single_measured.keys())
+    d = numpy.ndarray((len(single_measured), len(single_measured)))
+    d.fill(float('nan'))
+    for k, v in combined_measured.items():
+        i1, i2 = [instructions.index(i) for i in [c[0] for c in k]]
+        d[i1, i2] = v[2]
+    cmap = mpl.cm.get_cmap('plasma', 5)
+    cmap.set_bad('w') # default value is 'k'
+    fig = plt.figure(figsize=(10,10))
+    ax1 = fig.add_subplot(111)
+    cax = ax1.imshow(d, interpolation="nearest", cmap=cmap, norm=mpl.colors.Normalize(vmin=-.5, vmax=1.5))
+    ax1.set_xticks(range(len(instructions)))
+    ax1.set_xticklabels(instructions, rotation=90)
+    ax1.set_yticks(range(len(instructions)))
+    ax1.set_yticklabels(instructions)
+    ax1.set_title(socket.gethostname())
+    ax1.grid()
+    cb = fig.colorbar(cax, shrink=0.65)
+    cb.set_ticks([-.5, 0, 1, 1.5])
+    cb.set_ticklabels(['< -0.5', '0.0 (complete overlap)', '1.0 (no overlap)', '> 1.5'])
+    cb.set_label('inverse parallel overlap')
+    fig.tight_layout()
+    plt.show()
+
 
 if __name__ == '__main__':
     bench.setup_llvm()
@@ -190,7 +221,6 @@ if __name__ == '__main__':
             [i],
             serial_factor=8, throughput_serial_factor=8, parallel_factor=10,
             verbosity=0, repeat=10, min_elapsed=0.3, max_elapsed=0.5)
-            #serial_factor=8, throughput_serial_factor=8, parallel_factor=10)
         print('{:<16}  LAT {:.3f} cy  TP {:.3f} cy'.format(llvm_name, lat, tp))
         instructions_measured[llvm_name] = (lat, tp)
 
@@ -210,3 +240,4 @@ if __name__ == '__main__':
             a[0], b[0], lat, tp, same_port_metric))
         two_combinations_measured[(a[0], a[1]), (b[0], b[1])] = (lat, tp, same_port_metric)
 
+    plot_combined(instructions_measured, two_combinations_measured)
