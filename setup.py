@@ -6,7 +6,7 @@ with open('README.rst') as f:
 
 setup(
     name='asmbench',
-    version='0.1.1.2',
+    version='0.1.2',
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
     url='https://github.com/RRZE-HPC/asmbench',
     license='AGPLv3',
