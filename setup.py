@@ -6,7 +6,7 @@ with open('README.md') as f:
 
 setup(
     name='asmbench',
-    version='0.1.0',
+    version='0.1.1',
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
     url='',
     license='AGPLv3',
@@ -19,5 +19,6 @@ setup(
     extras_require={
         'sc18src': ['numpy', 'matplotlib'],
         'iaca': ['kerncraft'],
-    }
+    },
+    include_package_data=True,
 )
