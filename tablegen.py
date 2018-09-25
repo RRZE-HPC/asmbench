@@ -10,7 +10,7 @@ import argparse
 import random
 from pprint import pprint
 
-from asmjit import op, bench
+from asmbench import op, bench
 
 
 def split_list(raw):

@@ -2,7 +2,7 @@
 import collections
 import itertools
 
-from asmjit import op, bench, oldjit
+from asmbench import op, bench, oldjit
 
 
 def jit_based_benchs():
