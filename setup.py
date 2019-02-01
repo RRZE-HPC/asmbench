@@ -20,4 +20,9 @@ setup(
         'iaca': ['kerncraft'],
     },
     include_package_data=True,
+    entry_points={
+        'console_scripts': [
+            'asmbench=asmbench.__main__:main'
+        ]
+    }
 )
