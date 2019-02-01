@@ -183,7 +183,13 @@ class Synthable:
         return name
 
     def get_default_init_values(self):
-        return [init_value_by_llvm_type[reg.llvm_type] for reg in self.get_source_registers()]
+        r = []
+        for reg in self.get_source_registers():
+            try:
+                r.append(init_value_by_llvm_type[reg.llvm_type])
+            except KeyError:
+                raise ValueError("Invalid or unsupported LLVM type {!r}.".format(reg.llvm_type))
+        return r
 
     def __repr__(self):
         return '{}({})'.format(
