@@ -469,7 +469,8 @@ class LoadBenchmark(Benchmark):
         *chain_length* is the number of pointers to place in memory.
         *structure* may be 'linear' (1-offsets) or 'random'.
         """
-        Benchmark.__init__(self, parallel=parallel, serial=serial)
+        Benchmark.__init__(self, parallel=parallel, serial=1)
+        self._serial = serial
         self._loop_body = ''
         element_type = ctypes.POINTER(ctypes.c_int)
         self._function_ctype = ctypes.CFUNCTYPE(
@@ -556,11 +557,11 @@ class LoadBenchmark(Benchmark):
         for p in range(self.parallel):
             ret += ('  %"p_{p}.0" = phi i32** '
                     '[ %"p0_{p}", %"loop1" ], [ %"p_{p}.{s_max}", %"loop2" ]\n').format(
-                p=p, s_max=self.serial)
+                p=p, s_max=self._serial)
 
         # load p, compare to p0 and or-combine results
         for p in range(self.parallel):
-            for s in range(self.serial):
+            for s in range(self._serial):
                 ret += ('  %"pp_{p}.{s}" = bitcast i32** %"p_{p}.{s_prev}" to i32***\n'
                         '  %"p_{p}.{s}" = load i32**, i32*** %"pp_{p}.{s}", align 8\n').format(
                     p=p, s=s + 1, s_prev=s)
@@ -568,7 +569,7 @@ class LoadBenchmark(Benchmark):
             # Compare is needed for all registers, for llvm not to remove unused 
             # instructions:
             ret += '  %"cmp_{p}.loop2" = icmp eq i32** %"p_{p}.{s_max}", %"p0_{p}"\n'.format(
-                p=p, s_max=self.serial)
+                p=p, s_max=self._serial)
 
         # TODO tree reduce cmp to make use of all cmp_* values
 
