@@ -33,6 +33,9 @@ def uniquify(l):
 
 
 class Benchmark:
+    def __init__(self, frequency=None):
+        self.frequency = frequency or psutil.cpu_freq() * 1e6
+
     def __repr__(self):
         return '{}({})'.format(
             self.__class__.__name__,
@@ -141,13 +144,13 @@ class Benchmark:
         return {'iterations': self.get_iterations(args),
                 'arguments': args,
                 'runtimes': runtimes,
-                'frequency': psutil.cpu_freq().current * 1e6,
+                'frequency': self.frequency,
                 'returned': return_values}
 
 
 class LoopBenchmark(Benchmark):
-    def __init__(self, root_synth, init_values=None, loop_carried_dependencies=True):
-        super().__init__()
+    def __init__(self, root_synth, init_values=None, loop_carried_dependencies=True, **kwargs):
+        super().__init__(**kwargs)
         self.root_synth = root_synth
         self.init_values = init_values or root_synth.get_default_init_values()
         self.loop_carried_dependencies = loop_carried_dependencies
@@ -264,7 +267,7 @@ class IntegerLoopBenchmark(LoopBenchmark):
 
 def bench_instructions(instructions, serial_factor=8, parallel_factor=4, throughput_serial_factor=8,
                        serialize=False, verbosity=0, iaca_comparison=None,
-                       repeat=4, min_elapsed=0.1, max_elapsed=0.2):
+                       repeat=4, min_elapsed=0.1, max_elapsed=0.2, frequency=None):
     not_serializable = False
     try:
         # Latency Benchmark
@@ -277,7 +280,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         else:
             p_instrs = [op.Serialized(instructions * serial_factor)]
         p = op.Parallelized(p_instrs)
-        b = IntegerLoopBenchmark(p)
+        b = IntegerLoopBenchmark(p, frequency=frequency)
         if verbosity >= 3:
             print('### LLVM IR')
             print(b.build_ir())

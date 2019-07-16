@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 
+import psutil
 import llvmlite.binding as llvm
 
 from . import op, bench
@@ -25,6 +26,8 @@ def main():
                              'micro-architecuture abbreviation. (i.e. SNB, IVB, HSW, SKL, SKX)')
     parser.add_argument("--verbose", "-v", action="count", default=0,
                         help="increase output verbosity")
+    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() * 1e-3 is None,
+                        help='Provided (in GHz), if psutil.cpu_freq() does report anything.')
     args = parser.parse_args()
 
     bench.setup_llvm()
@@ -34,7 +37,8 @@ def main():
                                        throughput_serial_factor=args.throughput_serial,
                                        serialize=args.serialize,
                                        verbosity=args.verbose,
-                                       iaca_comparison=args.iaca)
+                                       iaca_comparison=args.iaca,
+                                       frequency=args.frequency*1e9)
     print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
 
 

@@ -8,6 +8,7 @@ import random
 import collections
 import pprint
 import math
+import argparse
 
 import llvmlite.binding as llvm
 import psutil
@@ -53,10 +54,11 @@ def floor_harmonic_fraction(n, error=0.1):
 
 
 class Benchmark:
-    def __init__(self, parallel=1, serial=5):
+    def __init__(self, parallel=1, serial=5, frequency=None):
         self._function_ctype = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)
         self.parallel = parallel
         self.serial = serial
+        self.frequency = frequency or psutil.cpu_freq().current * 1e6
 
         # Do interesting work
         self._loop_body = textwrap.dedent('''\
@@ -191,7 +193,7 @@ class Benchmark:
         return {'iterations': self.get_iterations(args),
                 'arguments': args,
                 'runtimes': runtimes,
-                'frequency': psutil.cpu_freq().current * 1e6}
+                'frequency': self.frequency}
 
     @classmethod
     def get_latency(cls, max_serial=6, print_table=False, **kwargs):
@@ -250,7 +252,8 @@ class InstructionBenchmark(Benchmark):
                  dstsrc_operands=(('r', 'i64', '0'),),
                  src_operands=(('i', 'i64', '1'),),
                  parallel=10,
-                 serial=4):
+                 serial=4,
+                 **kwargs):
         """
         Build LLVM IR for arithmetic instruction benchmark without memory references.
 
@@ -258,7 +261,7 @@ class InstructionBenchmark(Benchmark):
         is allowed. Only instruction's operands ($N) refer to the order of opernads found in
         dst + dstsrc + src.
         """
-        Benchmark.__init__(self, parallel=parallel, serial=serial)
+        Benchmark.__init__(self, parallel=parallel, serial=serial, **kwargs)
         self.instruction = instruction
         self.dst_operands = dst_operands
         self.dstsrc_operands = dstsrc_operands
@@ -339,7 +342,8 @@ class AddressGenerationBenchmark(Benchmark):
                  width=('i', None, '4'),
                  destination='base',
                  parallel=10,
-                 serial=4):
+                 serial=4,
+                 **kwargs):
         """
         Benchmark for address generation modes.
 
@@ -362,7 +366,7 @@ class AddressGenerationBenchmark(Benchmark):
         index: register
         width: immediate 1,2,4 or 8
         """
-        Benchmark.__init__(self, parallel=parallel, serial=serial)
+        Benchmark.__init__(self, parallel=parallel, serial=serial, **kwargs)
         self.offset = offset
         self.base = base
         self.index = index
@@ -462,14 +466,14 @@ class AddressGenerationBenchmark(Benchmark):
 
 
 class LoadBenchmark(Benchmark):
-    def __init__(self, chain_length=2048, structure='linear', parallel=6, serial=4):
+    def __init__(self, chain_length=2048, structure='linear', parallel=6, serial=4, **kwargs):
         """
         Benchmark for L1 load using pointer chasing.
 
         *chain_length* is the number of pointers to place in memory.
         *structure* may be 'linear' (1-offsets) or 'random'.
         """
-        Benchmark.__init__(self, parallel=parallel, serial=1)
+        Benchmark.__init__(self, parallel=parallel, serial=1, **kwargs)
         self._serial = serial
         self._loop_body = ''
         element_type = ctypes.POINTER(ctypes.c_int)
@@ -590,6 +594,12 @@ class LoadBenchmark(Benchmark):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='count', default=0)
+    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() * 1e-3 is None,
+        help='Provided (in GHz), if psutil.cpu_freq() does report anything.')
+    args = parser.parse_args()
+
     llvm.initialize()
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
@@ -812,9 +822,10 @@ if __name__ == '__main__':
 
     modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('LD ')])
 
-    verbose = 2 if '-v' in sys.argv else 0
     for key, module in modules.items():
-        if verbose > 0:
+        if args.frequency:
+            module.frequency = args.frequency*1e9
+        if args.verbose > 0:
             print("=== Benchmark")
             print(repr(module))
             print("=== LLVM")
@@ -822,7 +833,7 @@ if __name__ == '__main__':
             print("=== Assembly")
             print(module.get_assembly())
         r = module.build_and_execute(repeat=3)
-        if verbose > 0:
+        if args.verbose > 0:
             print("=== Result")
             pprint.pprint(r)
 
