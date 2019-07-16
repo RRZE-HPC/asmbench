@@ -596,9 +596,11 @@ class LoadBenchmark(Benchmark):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', action='count', default=0)
-    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() * 1e-3 is None,
+    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() is None,
         help='Provided (in GHz), if psutil.cpu_freq() does report anything.')
     args = parser.parse_args()
+    if args.frequency:
+        args.frequency *= 1e9
 
     llvm.initialize()
     llvm.initialize_native_target()
@@ -614,7 +616,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('i', 'i64', '1'),),
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # register source
     modules['add r64 r64 LAT'] = InstructionBenchmark(
@@ -623,7 +626,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('r', 'i64', '1'),),
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # multiple instructions
     modules['4xadd i64 r64 LAT'] = InstructionBenchmark(
@@ -632,7 +636,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('i', 'i64', '1'),),
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # immediate source
     modules['add i64 r64 TP'] = InstructionBenchmark(
@@ -641,7 +646,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('i', 'i64', '1'),),
         parallel=10,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # register source
     modules['add r64 r64 TP'] = InstructionBenchmark(
@@ -650,7 +656,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('r', 'i64', '1'),),
         parallel=10,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # multiple instructions
     modules['4xadd i64 r64 TP'] = InstructionBenchmark(
@@ -659,7 +666,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('r', 'i64', '0'),),
         src_operands=(('i', 'i64', '1'),),
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea base LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -668,7 +676,8 @@ if __name__ == '__main__':
         width=None,
         destination='base',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea base+offset LAT'] = AddressGenerationBenchmark(
         offset=('i', None, '23'),
@@ -677,7 +686,8 @@ if __name__ == '__main__':
         width=None,
         destination='base',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -686,7 +696,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
@@ -695,7 +706,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea base+index*width LAT'] = AddressGenerationBenchmark(
         offset=None,
@@ -704,7 +716,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea base+offset+index*width LAT'] = AddressGenerationBenchmark(
         offset=('i', None, '42'),
@@ -713,7 +726,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['lea base TP'] = AddressGenerationBenchmark(
         offset=None,
@@ -722,7 +736,8 @@ if __name__ == '__main__':
         width=None,
         destination='base',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea base+offset TP'] = AddressGenerationBenchmark(
         offset=('i', None, '23'),
@@ -731,7 +746,8 @@ if __name__ == '__main__':
         width=None,
         destination='base',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea index*width TP'] = AddressGenerationBenchmark(
         offset=None,
@@ -740,7 +756,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea offset+index*width TP'] = AddressGenerationBenchmark(
         offset=('i', 'i64', '-0x8'),
@@ -749,7 +766,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='index',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea base+index*width TP'] = AddressGenerationBenchmark(
         offset=None,
@@ -758,7 +776,8 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['lea base+offset+index*width TP'] = AddressGenerationBenchmark(
         offset=('i', None, '42'),
@@ -767,31 +786,36 @@ if __name__ == '__main__':
         width=('i', None, '4'),
         destination='base',
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules['LD linear LAT'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='linear',
         parallel=1,
-        serial=8)
+        serial=8,
+        frequency=args.frequency)
 
     modules['LD random LAT'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='random',
         parallel=1,
-        serial=8)
+        serial=8,
+        frequency=args.frequency)
 
     modules['LD linear TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='linear',
         parallel=6,
-        serial=8)
+        serial=8,
+        frequency=args.frequency)
 
     modules['LD random TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='random',
         parallel=6,
-        serial=8)
+        serial=8,
+        frequency=args.frequency)
     # TODO check that this does what it's supposed to do...
     print(modules['LD linear TP'].get_assembly())
 
@@ -801,7 +825,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
         src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) LAT'] = InstructionBenchmark(
         instruction='vmulpd $1, $0, $0',
@@ -809,7 +834,8 @@ if __name__ == '__main__':
         dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
         src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=1,
-        serial=5)
+        serial=5,
+        frequency=args.frequency)
 
     # This is actually a TP benchmark with parallel=1, because there are no inter-loop depencies:
     modules['vmulpd x<4 x double> x<4 x double> x<4 x double> (dstsrc) TP'] = InstructionBenchmark(
@@ -818,13 +844,12 @@ if __name__ == '__main__':
         dstsrc_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 1.23e-10'] * 4))),),
         src_operands=(('x', '<4 x double>', '<{}>'.format(', '.join(['double 3.21e-10'] * 4))),),
         parallel=10,
-        serial=1)
+        serial=1,
+        frequency=args.frequency)
 
     modules = collections.OrderedDict([(k, v) for k,v in modules.items() if k.startswith('LD ')])
 
     for key, module in modules.items():
-        if args.frequency:
-            module.frequency = args.frequency*1e9
         if args.verbose > 0:
             print("=== Benchmark")
             print(repr(module))

@@ -26,9 +26,11 @@ def main():
                              'micro-architecuture abbreviation. (i.e. SNB, IVB, HSW, SKL, SKX)')
     parser.add_argument("--verbose", "-v", action="count", default=0,
                         help="increase output verbosity")
-    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() * 1e-3 is None,
+    parser.add_argument('-f', '--frequency', type=float, required=psutil.cpu_freq() is None,
                         help='Provided (in GHz), if psutil.cpu_freq() does report anything.')
     args = parser.parse_args()
+    if args.frequency:
+        args.frequency *= 1e9
 
     bench.setup_llvm()
     lat, tp = bench.bench_instructions(args.instructions,
@@ -38,7 +40,7 @@ def main():
                                        serialize=args.serialize,
                                        verbosity=args.verbose,
                                        iaca_comparison=args.iaca,
-                                       frequency=args.frequency*1e9)
+                                       frequency=args.frequency)
     print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
 
 
