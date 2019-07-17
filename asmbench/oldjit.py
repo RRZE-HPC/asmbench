@@ -806,18 +806,16 @@ if __name__ == '__main__':
     modules['LD linear TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='linear',
-        parallel=6,
-        serial=8,
+        parallel=16,
+        serial=1,
         frequency=args.frequency)
 
     modules['LD random TP'] = LoadBenchmark(
         chain_length=2048,  # 2048 * 8B = 16kB
         structure='random',
-        parallel=6,
-        serial=8,
+        parallel=16,
+        serial=1,
         frequency=args.frequency)
-    # TODO check that this does what it's supposed to do...
-    print(modules['LD linear TP'].get_assembly())
 
     modules['vaddpd x<4 x double> x<4 x double> x<4 x double> LAT'] = InstructionBenchmark(
         instruction='vaddpd $1, $0, $0',
