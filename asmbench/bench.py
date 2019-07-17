@@ -289,7 +289,13 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
             print(b.get_assembly())
         if verbosity >= 3:
             print('### IACA Analysis')
-            print(b.get_iaca_analysis('SKL')['output'])
+            try:
+                print(b.get_iaca_analysis('SKL')['output'])
+            except ValueError as e:
+                print("Unable to perform IACA analysis (skipping): ", e)
+            except FileNotFoundError as e:
+                print("IACA binary not found by kerncraft. Run iaca_get to install.", e)
+                
         result = b.build_and_execute(
             repeat=repeat, min_elapsed=min_elapsed, max_elapsed=max_elapsed)
         lat = min(*[(t / serial_factor) * result['frequency'] / result['iterations']
@@ -326,7 +332,12 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         print(b.get_assembly())
     if verbosity >= 3:
         print('### IACA Analysis')
-        print(b.get_iaca_analysis('SKL')['output'])
+        try:
+            print(b.get_iaca_analysis('SKL')['output'])
+        except ValueError as e:
+            print("Unable to perform IACA analysis (skipping): ", e)
+        except FileNotFoundError as e:
+            print("IACA binary not found by kerncraft. Run iaca_get to install.", e)
     result = b.build_and_execute(
         repeat=repeat, min_elapsed=min_elapsed, max_elapsed=max_elapsed)
     tp = min(
