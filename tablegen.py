@@ -444,9 +444,9 @@ def main():
     bench.setup_llvm()
 
     # Benchmark TP and Lat for each instruction
-    # for instr_name, instr_op in instructions.items():
-    #     tp, lat = bench.bench_instructions([instr_op])
-    #     print("{:>12} {:>5.2f} {:>5.2f}".format(instr_name, tp, lat))
+    for instr_name, instr_op in instructions.items():
+        tp, lat = bench.bench_instructions([instr_op])
+        print("{:>12} {:>5.2f} {:>5.2f}".format(instr_name, tp, lat))
 
     # Benchmark TP and Lat for all valid instruction pairs
     # for a,b in itertools.combinations(instructions, 2):
