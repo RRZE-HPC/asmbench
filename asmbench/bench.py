@@ -34,7 +34,7 @@ def uniquify(l):
 
 class Benchmark:
     def __init__(self, frequency=None):
-        self.frequency = frequency or psutil.cpu_freq() * 1e6
+        self.frequency = frequency or psutil.cpu_freq().current * 1e6
 
     def __repr__(self):
         return '{}({})'.format(
@@ -140,7 +140,6 @@ class Benchmark:
                         break
                 return_values.append(ret)
                 runtimes.append(elapsed)
-
         return {'iterations': self.get_iterations(args),
                 'arguments': args,
                 'runtimes': runtimes,
@@ -323,7 +322,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     else:
         p_instrs = [op.Serialized(instructions * throughput_serial_factor)]
     p = op.Parallelized(p_instrs * parallel_factor)
-    b = IntegerLoopBenchmark(p)
+    b = IntegerLoopBenchmark(p, frequency=frequency)
     if verbosity >= 3:
         print('### LLVM IR')
         print(b.build_ir())
@@ -398,15 +397,3 @@ if __name__ == '__main__':
     b = IntegerLoopBenchmark(p1, init_values)
     print(b.build_ir())
     print(b.get_assembly())
-    print(b.build_and_execute())
-
-    print(bench_instructions([op.Instruction(
-        instruction='add $2, $0',
-        destination_operand=op.Register('i64', 'r'),
-        source_operands=[op.Register('i64', '0'), op.Immediate('i64', '1')])]))
-
-    # if len(s.get_source_operand_types())
-    # b = IntegerLoopBenchmark(loop_body,
-    #                          [(type_, dst_reg, '1', src_reg)
-    #                           # for type_, dst_reg, src_reg in zip(s.get_last_destination_type(), )])
-    # print(b.get_ir())
