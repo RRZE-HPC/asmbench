@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import re
+from itertools import zip_longest
 
 # TODO use abc to force implementation of interface requirements
 
@@ -430,9 +431,10 @@ class Serialized(Synthable):
 
 
 class Parallelized(Synthable):
-    def __init__(self, synths):
+    def __init__(self, synths, interleave=False):
         super().__init__()
         self.synths = synths
+        self.interleave = interleave
         assert all([isinstance(s, Synthable) for s in synths]), "All elements need to be Sythable"
 
     def get_source_registers(self):
@@ -465,6 +467,10 @@ class Parallelized(Synthable):
         code = []
         for s, r in zip(self.synths, reg_names):
             code.append(s.build_ir(*r, used_registers))
+
+        # Interleave parallelized sequences
+        if self.interleave:
+            code = ['\n'.join(c) for c in list(zip_longest(*[c.split('\n') for c in code]))]
         return '\n'.join(code)
 
 

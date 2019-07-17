@@ -321,7 +321,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
             p_instrs.append(op.Serialized([i] * throughput_serial_factor))
     else:
         p_instrs = [op.Serialized(instructions * throughput_serial_factor)]
-    p = op.Parallelized(p_instrs * parallel_factor)
+    p = op.Parallelized(p_instrs * parallel_factor, interleave=True)
     b = IntegerLoopBenchmark(p, frequency=frequency)
     if verbosity >= 3:
         print('### LLVM IR')
