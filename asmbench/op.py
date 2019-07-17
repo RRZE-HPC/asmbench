@@ -470,7 +470,8 @@ class Parallelized(Synthable):
 
         # Interleave parallelized sequences
         if self.interleave:
-            code = ['\n'.join(c) for c in list(zip_longest(*[c.split('\n') for c in code]))]
+            code = ['\n'.join(filter(None.__ne__, c))
+                    for c in list(zip_longest(*[c.split('\n') for c in code]))]
         return '\n'.join(code)
 
 
