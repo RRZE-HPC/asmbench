@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description='Assembly Instruction Benchmark Toolkit')
     # parser.add_argument('mode', metavar='MODE', type=str, choices=['latency', 'throughput'])
     parser.add_argument('instructions', metavar='INSTR', type=op.Instruction.from_string, nargs='+',
-                        help='instruction declaration, e.g., "add {src:i32:r} {srcdst:i32:r}"')
+                        help='instruction declaration, e.g., "add {src:i32:r}, {srcdst:i32:r}"')
     parser.add_argument('--serialize', action='store_true',
                         help='Serialize instructions.')
     parser.add_argument('--latency-serial', '-l', type=int, default=8,
