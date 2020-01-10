@@ -34,7 +34,7 @@ def uniquify(l):
 
 class Benchmark:
     def __init__(self, frequency=None):
-        self.frequency = frequency or psutil.cpu_freq().current * 1e6
+        self.frequency = frequency or psutil.cpu_freq().max * 1e6
 
     def __repr__(self):
         return '{}({})'.format(
