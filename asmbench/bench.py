@@ -191,7 +191,7 @@ class LoopBenchmark(Benchmark):
                 if src_idx == last_match_idx:
                     break
         if not matched:
-            raise ValueError("Unable to match source to any destination.")
+            pass #raise ValueError("Unable to match source to any destination.")
 
         code = ''
         for dst_reg, dst_name, init_value, src_reg, src_name in lcd:
@@ -307,6 +307,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     except op.NotSerializableError as e:
         print("Latency measurement not possible:", e)
         not_serializable = True
+        lat = None
 
     if not_serializable:
         throughput_serial_factor = 1
