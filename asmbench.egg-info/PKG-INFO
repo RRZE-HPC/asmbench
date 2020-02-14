@@ -1,0 +1,29 @@
+Metadata-Version: 2.1
+Name: asmbench
+Version: 0.1.4
+Summary: A Benchmark Toolkit for Assembly Instructions Using the LLVM JIT
+Home-page: https://github.com/RRZE-HPC/asmbench
+Author: Julian Hammer
+Author-email: julian.hammer@fau.de
+License: AGPLv3
+Description: asmbench
+        ========
+        
+        A benchmark toolkit for assembly instructions using the LLVM JIT.
+        
+        Usage
+        =====
+        
+        To benchmark latency and throughput of a 64bit integer add use the following command:
+        
+        ``python -m asmbench 'add {src:i64:r}, {srcdst:i64:r}'``
+        
+        To benchmark two instructions interleaved use this:
+        
+        ``python -m asmbench 'add {src:i64:r}, {srcdst:i64:r}' 'sub {src:i64:r}, {srcdst:i64:r}'``
+        
+        To find out more add `-h` for help and `-v` for verbose mode.
+        
+Platform: UNKNOWN
+Provides-Extra: iaca
+Provides-Extra: sc18src

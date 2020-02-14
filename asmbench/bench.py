@@ -12,9 +12,9 @@ import sys
 import llvmlite.binding as llvm
 import psutil
 try:
-    from kerncraft import iaca
+    from kerncraft import incode_model
 except ImportError:
-    iaca = None
+    incode_model = None
 
 from . import op
 
@@ -87,13 +87,13 @@ class Benchmark:
 
     def get_iaca_analysis(self, arch):
         """Compile and return IACA analysis."""
-        if iaca is None:
+        if incode_model is None:
             raise ValueError("kerncraft not installed. IACA analysis is not supported.")
         tm = self.get_target_machine()
         tmpf = tempfile.NamedTemporaryFile("wb")
         tmpf.write(tm.emit_object(self.get_llvm_module(iaca_marker=True)))
         tmpf.flush()
-        return iaca.iaca_analyse_instrumented_binary(tmpf.name, arch)
+        return incode_model.iaca_analyse_instrumented_binary(tmpf.name, arch)
 
     def build_and_execute(self, repeat=10, min_elapsed=0.1, max_elapsed=0.3):
         # Compile the module to machine code using MCJIT

@@ -1,0 +1,3 @@
+[console_scripts]
+asmbench = asmbench.__main__:main
+
