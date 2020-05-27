@@ -1,9 +1,0 @@
-llvmlite>=0.23.2
-psutil
-
-[iaca]
-kerncraft
-
-[sc18src]
-numpy
-matplotlib
