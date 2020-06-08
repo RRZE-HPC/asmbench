@@ -41,7 +41,10 @@ def main():
                                        verbosity=args.verbose,
                                        iaca_comparison=args.iaca,
                                        frequency=args.frequency)
-    print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
+    if lat:
+        print("Latency: {:.2f} cycle\nThroughput: {:.2f} cycle\n".format(lat, tp))
+    else:
+        print("Throughput: {:.2f} cycle\n".format(tp))
 
 
 if __name__ == "__main__":

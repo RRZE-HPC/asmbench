@@ -309,6 +309,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
         not_serializable = True
 
     if not_serializable:
+        lat = None
         throughput_serial_factor = 1
         print("WARNING: throughput_serial_factor has be set to 1.")
 
