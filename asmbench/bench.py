@@ -12,9 +12,9 @@ import sys
 import llvmlite.binding as llvm
 import psutil
 try:
-    from kerncraft import iaca
+    from kerncraft import incode_model
 except ImportError:
-    iaca = None
+    incode_model = None
 
 from . import op
 
@@ -34,7 +34,7 @@ def uniquify(l):
 
 class Benchmark:
     def __init__(self, frequency=None):
-        self.frequency = frequency or psutil.cpu_freq().current * 1e6
+        self.frequency = frequency or psutil.cpu_freq().max * 1e6
 
     def __repr__(self):
         return '{}({})'.format(
@@ -87,13 +87,13 @@ class Benchmark:
 
     def get_iaca_analysis(self, arch):
         """Compile and return IACA analysis."""
-        if iaca is None:
+        if incode_model is None:
             raise ValueError("kerncraft not installed. IACA analysis is not supported.")
         tm = self.get_target_machine()
         tmpf = tempfile.NamedTemporaryFile("wb")
         tmpf.write(tm.emit_object(self.get_llvm_module(iaca_marker=True)))
         tmpf.flush()
-        return iaca.iaca_analyse_instrumented_binary(tmpf.name, arch)
+        return incode_model.iaca_analyse_instrumented_binary(tmpf.name, arch)
 
     def build_and_execute(self, repeat=10, min_elapsed=0.1, max_elapsed=0.3):
         # Compile the module to machine code using MCJIT
@@ -191,7 +191,7 @@ class LoopBenchmark(Benchmark):
                 if src_idx == last_match_idx:
                     break
         if not matched:
-            raise ValueError("Unable to match source to any destination.")
+            pass #raise ValueError("Unable to match source to any destination.")
 
         code = ''
         for dst_reg, dst_name, init_value, src_reg, src_name in lcd:
@@ -307,6 +307,7 @@ def bench_instructions(instructions, serial_factor=8, parallel_factor=4, through
     except op.NotSerializableError as e:
         print("Latency measurement not possible:", e)
         not_serializable = True
+        lat = None
 
     if not_serializable:
         lat = None
