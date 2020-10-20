@@ -2,6 +2,8 @@
 import re
 from itertools import zip_longest
 
+import llvmlite.binding as llvm
+
 # TODO use abc to force implementation of interface requirements
 
 init_value_by_llvm_type = {'i' + bits: '3' for bits in ['1', '8', '16', '32', '64']}
@@ -16,6 +18,22 @@ init_value_by_llvm_type.update(
      for vec in [2, 4, 8, 16, 32, 64]})
 
 
+aarch64_llvm_type_shape = {
+    'float': 's',
+    'double': 'd'
+}
+aarch64_llvm_type_suffix = {
+    '<8 x i8>': '8b',
+    '<16 x i8>': '16b',
+    '<4 x i16>': '4h',
+    '<8 x i16>': '8h',
+    '<4 x i32>': '4s',
+    '<2 x i64>>': '2d',
+    '<4 x float>': '4s',
+    '<2 x double>': '2d'
+}
+
+
 class NotSerializableError(Exception):
     pass
 
@@ -25,6 +43,38 @@ class Operand:
 
     def get_constraint_char(self):
         raise NotImplementedError()
+
+    def template_string(self, index):
+        """
+        Generate template string to be used in LLVM IR call asm.
+
+        This is used to disambiguate different usage types of a single register
+        from its constaint code.
+
+        E.g. on aarch64 targets float types will append a shape parameter to
+        differentiate between single and double precision types.
+
+        :param index: Index to use for input or output constraints.
+        """
+        # Optional ${reg:shape} parameter
+        shape = None
+        # Optional ${reg}.suffix parameter
+        suffix = None
+
+        target_triple = llvm.get_default_triple()
+        if target_triple.startswith('aarch64-'):
+            shape = aarch64_llvm_type_shape.get(self.llvm_type)
+            suffix = aarch64_llvm_type_suffix.get(self.llvm_type)
+
+        if shape == None:
+            shape = ''
+        else:
+            shape = ':' + shape
+        if suffix == None:
+            suffix = ''
+        else:
+            suffix = '.' + suffix
+        return '${{{}{}}}{}'.format(index, shape, suffix)
 
     def __repr__(self):
         return '{}({})'.format(
@@ -154,7 +204,7 @@ class Register(Operand):
         :param s: must have the form: "llvm_type:constraint_char"
         """
         llvm_type, constraint_char = s.split(':', 1)
-        valid_cc = 'rx'
+        valid_cc = 'rxw'
         if constraint_char not in valid_cc:
             raise ValueError("Invalid constraint character, must be one of {!r}".format(valid_cc))
         return cls(llvm_type, constraint_char)
@@ -240,7 +290,8 @@ class Instruction(Operation):
         # Build constraint string from operands
         constraints = ','.join(
             ['=' + self.destination_operand.get_constraint_char()] +
-            [sop.get_constraint_char() for sop in self.source_operands])
+            [sop.get_constraint_char() for sop in self.source_operands] +
+            ['~{cc}'])
 
         # Build argument string from operands and register names
         operands = []
@@ -305,13 +356,13 @@ class Instruction(Operation):
             if 'src' in direction and not 'dst' in direction:
                 src_ops.append(operand)
                 # replace with index string
-                instruction = (instruction[:m.start()] + "${}".format(src_index)
+                instruction = (instruction[:m.start()] + operand.template_string(src_index)
                                + instruction[m.end():])
                 src_index += 1
             if 'dst' in direction:
                 dst_ops.append(operand)
                 # replace with index string
-                instruction = (instruction[:m.start()] + "${}".format(dst_index)
+                instruction = (instruction[:m.start()] + operand.template_string(dst_index)
                                + instruction[m.end():])
                 if 'src' in direction:
                     src_ops.append(Register(operand_string.split(':', 1)[0], str(dst_index)))
